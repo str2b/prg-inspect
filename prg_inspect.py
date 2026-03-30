@@ -4,11 +4,11 @@ prg_inspect.py - Unified EDIABAS PRG Inspection Tool
 
 Modes
 -----
-  prg   <file.prg> [-w N] [-j]                  Architectural overview: jobs + tables
-  job   <file.prg> <JOB> [-w N] [-j] [--heuristic]  Deep job dump with referenced tables
-  table <file.prg> <TABLE ...> [-w N] [-j]       Dump one or more named tables
-  dtc   <file.prg> [-w N] [-j]                  Dump DTC tables (FORTTEXTE)
-  dis   <file.prg> <JOB>                         Disassemble job bytecode (text only)
+  --prg              -f <file.prg> [-w N] [-j]
+  --job   <JOB>...   -f <file.prg> [-w N] [-j] [--heuristic]
+  --table <TABLE>... -f <file.prg> [-w N] [-j]
+  --dtc              -f <file.prg> [-w N] [-j]
+  --dis   <JOB>...   -f <file.prg>
 
 Common flags
   -w / --width N   Max chars per cell (bare flag or 0 = unlimited; default 50)
@@ -791,131 +791,136 @@ def _find_table_refs_in_text(
 def cmd_job(args):
     """Deep job dump: description, referenced tables, recursive table data."""
     reader = PRGReader(args.file)
-    job_name = args.job.upper()
     heuristic = getattr(args, "heuristic", False)
-
     descriptions = reader.read_job_descriptions()
-    desc = descriptions.get(job_name, {})
-
     all_tables = reader.read_table_dir()
-    # Primary refs: table names found as string literals in the job's bytecode.
-    code_refs = reader.find_job_code_refs(job_name, all_tables)
+    json_output = {"file": args.file, "jobs": []}
 
-    # Secondary refs: 'table <Name>' patterns in description comments/args/results.
-    implicit_refs = []
-    if all_tables:
-        for c in desc.get("comments", []):
-            _find_table_refs_in_text(c, all_tables, code_refs, implicit_refs, heuristic)
-        for a in desc.get("args", []):
-            arg_name = a.get("name", "").upper()
-            if arg_name in all_tables and arg_name not in code_refs:
-                implicit_refs.append(f"{arg_name} (Linked via Argument Match)")
-            _find_table_refs_in_text(
-                a.get("comment", ""), all_tables, code_refs, implicit_refs, heuristic
-            )
-        for r in desc.get("results", []):
-            res_name = r.get("name", "").upper()
-            if res_name in all_tables and res_name not in code_refs:
-                implicit_refs.append(f"{res_name} (Linked via Result Match)")
-            _find_table_refs_in_text(
-                r.get("comment", ""), all_tables, code_refs, implicit_refs, heuristic
-            )
+    for job_name_raw in args.job:
+        job_name = job_name_raw.upper()
+        desc = descriptions.get(job_name, {})
 
-    all_refs = sorted(
-        set(code_refs + [i.split(" (Linked")[0].strip().upper() for i in implicit_refs])
-    )
-    all_refs_display = sorted(code_refs + implicit_refs)
+        # Primary refs: table names found as string literals in the job's bytecode.
+        code_refs = reader.find_job_code_refs(job_name, all_tables)
 
-    # Collect table data
-    table_data_map = {}
-    queue = list(all_refs)
-    seen = set()
-    while queue:
-        t_name = queue.pop(0)
-        if t_name in seen or t_name not in all_tables:
+        # Secondary refs: 'table <Name>' patterns in description comments/args/results.
+        implicit_refs = []
+        if all_tables:
+            for c in desc.get("comments", []):
+                _find_table_refs_in_text(c, all_tables, code_refs, implicit_refs, heuristic)
+            for a in desc.get("args", []):
+                arg_name = a.get("name", "").upper()
+                if arg_name in all_tables and arg_name not in code_refs:
+                    implicit_refs.append(f"{arg_name} (Linked via Argument Match)")
+                _find_table_refs_in_text(
+                    a.get("comment", ""), all_tables, code_refs, implicit_refs, heuristic
+                )
+            for r in desc.get("results", []):
+                res_name = r.get("name", "").upper()
+                if res_name in all_tables and res_name not in code_refs:
+                    implicit_refs.append(f"{res_name} (Linked via Result Match)")
+                _find_table_refs_in_text(
+                    r.get("comment", ""), all_tables, code_refs, implicit_refs, heuristic
+                )
+
+        all_refs = sorted(
+            set(code_refs + [i.split(" (Linked")[0].strip().upper() for i in implicit_refs])
+        )
+        all_refs_display = sorted(code_refs + implicit_refs)
+
+        # Collect table data
+        table_data_map = {}
+        queue = list(all_refs)
+        seen = set()
+        while queue:
+            t_name = queue.pop(0)
+            if t_name in seen or t_name not in all_tables:
+                continue
+            seen.add(t_name)
+            try:
+                rows = reader.extract_table_data(all_tables[t_name], all_tables)
+                table_data_map[t_name] = rows
+                for row in rows:
+                    for cell in row:
+                        potential = str(cell).strip().upper()
+                        if potential in all_tables and potential not in seen:
+                            queue.append(potential)
+            except Exception as e:
+                table_data_map[t_name] = []
+
+        if args.json:
+            comments_raw = desc.get("comments", []) if desc else []
+            out = {
+                "job": job_name,
+                "description": {
+                    "comments": [c.replace("\r", "") for c in comments_raw],
+                    "args": [
+                        {
+                            "name": a.get("name", ""),
+                            "type": a.get("type", ""),
+                            "comment": a.get("comment", "").replace("\r", ""),
+                        }
+                        for a in desc.get("args", [])
+                    ],
+                    "results": [
+                        {
+                            "name": r.get("name", ""),
+                            "type": r.get("type", ""),
+                            "comment": r.get("comment", "").replace("\r", ""),
+                        }
+                        for r in desc.get("results", [])
+                    ],
+                },
+                "referenced_tables": all_refs_display,
+                "table_data": {name: rows for name, rows in table_data_map.items()},
+            }
+            json_output["jobs"].append(out)
             continue
-        seen.add(t_name)
-        try:
-            rows = reader.extract_table_data(all_tables[t_name], all_tables)
-            table_data_map[t_name] = rows
-            for row in rows:
-                for cell in row:
-                    potential = str(cell).strip().upper()
-                    if potential in all_tables and potential not in seen:
-                        queue.append(potential)
-        except Exception as e:
-            table_data_map[t_name] = []
+
+        print(f"=== Job Dump: {job_name} ===")
+        print(f"File: {args.file}\n")
+
+        # Description block
+        comments_raw = desc.get("comments", [])
+        comments = "\n".join(c.replace("\r", "") for c in comments_raw)
+        args_list = [
+            f"  {a.get('name','')}{(' (' + a.get('type','') + ')') if a.get('type') else ''}: "
+            f"{a.get('comment','').replace(chr(13),'')}"
+            for a in desc.get("args", [])
+        ]
+        results_list = [
+            f"  {r.get('name','')}{(' (' + r.get('type','') + ')') if r.get('type') else ''}: "
+            f"{r.get('comment','').replace(chr(13),'')}"
+            for r in desc.get("results", [])
+        ]
+
+        if comments or args_list or results_list:
+            print("--- DESCRIPTION ---")
+            if comments:
+                print(comments)
+            if args_list:
+                print(f"\n[Arguments]\n" + "\n".join(args_list))
+            if results_list:
+                print(f"\n[Results]\n" + "\n".join(results_list))
+            print("-" * 19 + "\n")
+        else:
+            print("--- DESCRIPTION ---\n(None or Empty)\n-------------------\n")
+
+        if not all_refs_display:
+            print("--- REFERENCED TABLES ---\n  (None)\n-------------------------\n")
+        else:
+            print("--- REFERENCED TABLES ---")
+            for ref in all_refs_display:
+                print(f"  {ref}")
+            print("-------------------------\n")
+            for t_name in all_refs:
+                rows = table_data_map.get(t_name)
+                if rows is not None:
+                    pretty_print_table(rows, t_name, width=args.width)
+            print()
 
     if args.json:
-        comments_raw = desc.get("comments", []) if desc else []
-        out = {
-            "file": args.file,
-            "job": job_name,
-            "description": {
-                "comments": [c.replace("\r", "") for c in comments_raw],
-                "args": [
-                    {
-                        "name": a.get("name", ""),
-                        "type": a.get("type", ""),
-                        "comment": a.get("comment", "").replace("\r", ""),
-                    }
-                    for a in desc.get("args", [])
-                ],
-                "results": [
-                    {
-                        "name": r.get("name", ""),
-                        "type": r.get("type", ""),
-                        "comment": r.get("comment", "").replace("\r", ""),
-                    }
-                    for r in desc.get("results", [])
-                ],
-            },
-            "referenced_tables": all_refs_display,
-            "table_data": {name: rows for name, rows in table_data_map.items()},
-        }
-        print(json.dumps(out, indent=2, ensure_ascii=False))
-        return
-
-    print(f"=== Job Dump: {job_name} ===")
-    print(f"File: {args.file}\n")
-
-    # Description block
-    comments_raw = desc.get("comments", [])
-    comments = "\n".join(c.replace("\r", "") for c in comments_raw)
-    args_list = [
-        f"  {a.get('name','')}{(' (' + a.get('type','') + ')') if a.get('type') else ''}: "
-        f"{a.get('comment','').replace(chr(13),'')}"
-        for a in desc.get("args", [])
-    ]
-    results_list = [
-        f"  {r.get('name','')}{(' (' + r.get('type','') + ')') if r.get('type') else ''}: "
-        f"{r.get('comment','').replace(chr(13),'')}"
-        for r in desc.get("results", [])
-    ]
-
-    if comments or args_list or results_list:
-        print("--- DESCRIPTION ---")
-        if comments:
-            print(comments)
-        if args_list:
-            print(f"\n[Arguments]\n" + "\n".join(args_list))
-        if results_list:
-            print(f"\n[Results]\n" + "\n".join(results_list))
-        print("-" * 19 + "\n")
-    else:
-        print("--- DESCRIPTION ---\n(None or Empty)\n-------------------\n")
-
-    if not all_refs_display:
-        print("--- REFERENCED TABLES ---\n  (None)\n-------------------------\n")
-    else:
-        print("--- REFERENCED TABLES ---")
-        for ref in all_refs_display:
-            print(f"  {ref}")
-        print("-------------------------\n")
-        for t_name in all_refs:
-            rows = table_data_map.get(t_name)
-            if rows is not None:
-                pretty_print_table(rows, t_name, width=args.width)
+        print(json.dumps(json_output, indent=2, ensure_ascii=False))
 
 
 # ===========================================================================
@@ -926,8 +931,8 @@ def cmd_table(args):
     reader = PRGReader(args.file)
     all_tables = reader.read_table_dir()
     json_output = {"file": args.file, "tables": []}
-
-    for table_name_raw in args.tables:
+    
+    for table_name_raw in args.table:
         table_name = table_name_raw.upper()
         # Case-insensitive lookup
         match = next((k for k in all_tables if k.upper() == table_name), None)
@@ -1004,54 +1009,60 @@ def cmd_dtc(args):
 def cmd_dis(args):
     """Disassemble a job's bytecode (text only)."""
     reader = PRGReader(args.file)
-    job_name = args.job.upper()
 
-    target_addr, ref_tables, instructions = reader.disassemble_job(job_name)
+    for job_name_raw in args.dis:
+        job_name = job_name_raw.upper()
+        target_addr, ref_tables, instructions = reader.disassemble_job(job_name)
 
-    if target_addr is None:
-        # List available jobs as a hint
-        jobs = reader.read_job_dir()
-        print(f"Job '{args.job}' not found in {args.file}.")
-        print(
-            "Available jobs: "
-            + ", ".join(n for n, _ in sorted(jobs, key=lambda x: x[0]))
-        )
-        sys.exit(1)
+        if target_addr is None:
+            # List available jobs as a hint
+            jobs = reader.read_job_dir()
+            print(f"Job '{job_name_raw}' not found in {args.file}.")
+            print(
+                "Available jobs: "
+                + ", ".join(n for n, _ in sorted(jobs, key=lambda x: x[0]))
+            )
+            print()
+            continue
 
-    print(f"=== Disassembly: {job_name} @ 0x{target_addr:X} ===")
-    print(f"File: {args.file}")
-    if ref_tables:
-        print(f"Referenced tables: {', '.join(sorted(ref_tables))}")
-    print()
-    for inst in instructions:
-        print(inst)
+        print(f"=== Disassembly: {job_name} @ 0x{target_addr:X} ===")
+        print(f"File: {args.file}")
+        if ref_tables:
+            print(f"Referenced tables: {', '.join(sorted(ref_tables))}")
+        print()
+        for inst in instructions:
+            print(inst)
+        print()
 
 
 # ===========================================================================
 # Argument parser
 # ===========================================================================
 def build_parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         prog="prg_inspect",
         description="Unified EDIABAS PRG inspection tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  prg_inspect.py prg  ecufile.prg
-  prg_inspect.py prg  ecufile.prg -j
-  prg_inspect.py job  ecufile.prg READ_EEPROM -f
-  prg_inspect.py table ecufile.prg FORTTEXTE FARTTEXTE
-  prg_inspect.py dtc  ecufile.prg
-  prg_inspect.py dis  ecufile.prg STATUS_LESEN
+  prg_inspect.py --prg              -f ecufile.prg
+  prg_inspect.py --prg              -f ecufile.prg -j
+  prg_inspect.py --job READ_EEPROM  -f ecufile.prg
+  prg_inspect.py --table FORTTEXTE  -f ecufile.prg
+  prg_inspect.py --dtc              -f ecufile.prg
+  prg_inspect.py --dis STATUS_LESEN -f ecufile.prg
 """,
     )
 
-    sub = root.add_subparsers(dest="mode", metavar="MODE", required=True)
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument("--prg",   action="store_true",  help="Architectural overview: jobs + tables")
+    mode_group.add_argument("--job",   metavar="JOB", nargs="+", help="Deep job dump (job name)")
+    mode_group.add_argument("--table", metavar="TABLE", nargs="+", help="Dump named table(s)")
+    mode_group.add_argument("--dtc",   action="store_true",  help="Dump DTC tables (FORTTEXTE)")
+    mode_group.add_argument("--dis",   metavar="JOB", nargs="+", help="Disassemble job bytecode")
 
-    # -- prg ----------------------------------------------------------------
-    p_prg = sub.add_parser("prg", help="Architectural overview: jobs + tables")
-    p_prg.add_argument("file", help="Path to .prg file")
-    p_prg.add_argument(
+    parser.add_argument("-f", "--file", required=True, help="Path to .prg file")
+    parser.add_argument(
         "-w",
         "--width",
         nargs="?",
@@ -1061,71 +1072,14 @@ Examples:
         metavar="N",
         help="Max chars per cell (0 or bare flag = unlimited; default 50)",
     )
-    p_prg.add_argument("-j", "--json", action="store_true", help="Emit JSON output")
-    p_prg.set_defaults(func=cmd_prg)
-
-    # -- job ----------------------------------------------------------------
-    p_job = sub.add_parser("job", help="Deep job dump with referenced tables")
-    p_job.add_argument("file", help="Path to .prg file")
-    p_job.add_argument("job", help="Job name (case-insensitive)")
-    p_job.add_argument(
-        "-w",
-        "--width",
-        nargs="?",
-        type=int,
-        const=0,
-        default=50,
-        metavar="N",
-        help="Max chars per cell (0 or bare flag = unlimited; default 50)",
-    )
-    p_job.add_argument("-j", "--json", action="store_true", help="Emit JSON output")
-    p_job.add_argument(
+    parser.add_argument("-j", "--json", action="store_true", help="Emit JSON output")
+    parser.add_argument(
         "--heuristic",
         action="store_true",
-        help="Match tables via _xxx wildcard patterns in comments (non-standard)",
+        help="Match tables via _xxx wildcard patterns in comments (non-standard, job mode only)",
     )
-    p_job.set_defaults(func=cmd_job)
 
-    # -- table --------------------------------------------------------------
-    p_tbl = sub.add_parser("table", help="Dump one or more named tables")
-    p_tbl.add_argument("file", help="Path to .prg file")
-    p_tbl.add_argument("tables", nargs="+", help="Table name(s) (case-insensitive)")
-    p_tbl.add_argument(
-        "-w",
-        "--width",
-        nargs="?",
-        type=int,
-        const=0,
-        default=50,
-        metavar="N",
-        help="Max chars per cell (0 or bare flag = unlimited; default 50)",
-    )
-    p_tbl.add_argument("-j", "--json", action="store_true", help="Emit JSON output")
-    p_tbl.set_defaults(func=cmd_table)
-
-    # -- dtc ----------------------------------------------------------------
-    p_dtc = sub.add_parser("dtc", help="Dump DTC tables (FORTTEXTE)")
-    p_dtc.add_argument("file", help="Path to .prg file")
-    p_dtc.add_argument(
-        "-w",
-        "--width",
-        nargs="?",
-        type=int,
-        const=0,
-        default=50,
-        metavar="N",
-        help="Max chars per cell (0 or bare flag = unlimited; default 50)",
-    )
-    p_dtc.add_argument("-j", "--json", action="store_true", help="Emit JSON output")
-    p_dtc.set_defaults(func=cmd_dtc)
-
-    # -- dis ----------------------------------------------------------------
-    p_dis = sub.add_parser("dis", help="Disassemble job bytecode (text only)")
-    p_dis.add_argument("file", help="Path to .prg file")
-    p_dis.add_argument("job", help="Job name (case-insensitive)")
-    p_dis.set_defaults(func=cmd_dis)
-
-    return root
+    return parser
 
 
 # ===========================================================================
@@ -1135,7 +1089,18 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = build_parser()
     args = parser.parse_args()
-    args.func(args)
+    
+    if args.job:
+        cmd_job(args)
+    elif args.dis:
+        cmd_dis(args)
+    elif args.table:
+        cmd_table(args)
+    elif args.dtc:
+        cmd_dtc(args)
+    elif args.prg:
+        cmd_prg(args)
+
 
 
 if __name__ == "__main__":

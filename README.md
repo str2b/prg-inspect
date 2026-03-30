@@ -7,18 +7,24 @@ Inspection tool for EDIABAS `.prg` and `.grp` binary files.
 ## Usage
 
 ```
-python prg_inspect.py <mode> <file.prg> [options]
+python prg_inspect.py --prg              -f <file.prg> [-w N] [-j]
+python prg_inspect.py --job   <JOB>...   -f <file.prg> [-w N] [-j] [--heuristic]
+python prg_inspect.py --table <TABLE>... -f <file.prg> [-w N] [-j]
+python prg_inspect.py --dtc              -f <file.prg> [-w N] [-j]
+python prg_inspect.py --dis   <JOB>...   -f <file.prg>
 ```
 
-### Modes
+### Mode Selection
+
+Exactly one mode flag must be provided:
 
 | Mode | Description |
 |------|-------------|
-| `prg` | Architectural overview: all jobs and tables |
-| `job` | Deep dump of a single job with description and referenced tables |
-| `table` | Dump one or more named tables |
-| `dtc` | Dump fault-code tables (`FORTTEXTE`) |
-| `dis` | Disassemble a job's bytecode |
+| `--prg` | Architectural overview: all jobs and tables |
+| `--job <JOB>...` | Deep dump of one or more jobs with descriptions and referenced tables |
+| `--table <TABLE>...` | Dump one or more named tables |
+| `--dtc` | Dump fault-code tables (`FORTTEXTE`) |
+| `--dis <JOB>...` | Disassemble one or more jobs' bytecode |
 
 ---
 
@@ -26,17 +32,18 @@ python prg_inspect.py <mode> <file.prg> [options]
 
 | Flag | Description |
 |------|-------------|
+| `-f` / `--file` | Path to the `.prg` file (required for all modes). |
 | `-w N` / `--width N` | Truncate cell strings to N characters. Bare `-w` or `-w 0` disables truncation. Default: 50. |
-| `-j` / `--json` | Emit machine-readable JSON instead of pretty text. Not available for `dis`. |
+| `-j` / `--json` | Emit machine-readable JSON instead of pretty text. Not available for `--dis`. |
 
 ---
 
 ## Mode reference
 
-### `prg`: Architectural overview
+### `--prg`: Architectural overview
 
 ```
-python prg_inspect.py prg <file.prg> [-w N] [-j]
+python prg_inspect.py --prg -f <file.prg> [-w N] [-j]
 ```
 
 Lists all jobs (with optional description from the embedded comment block) and
@@ -44,19 +51,19 @@ all tables (name, address, declared column and row counts).
 
 **Example**
 ```
-python prg_inspect.py prg demo.prg
-python prg_inspect.py prg demo.prg -j
+python prg_inspect.py --prg -f demo.prg
+python prg_inspect.py --prg -f demo.prg -j
 ```
 
 ---
 
-### `job`: Job dump
+### `--job`: Job dump
 
 ```
-python prg_inspect.py job <file.prg> <JOB> [-w N] [-j] [--heuristic]
+python prg_inspect.py --job <JOB> [<JOB> ...] -f <file.prg> [-w N] [-j] [--heuristic]
 ```
 
-Displays:
+Displays for one or more jobs:
 - The job's embedded description (comments, arguments, results)
 - All tables referenced by the job, found via two methods:
   1. **Bytecode scan**: string literals passed to `tabset` and similar opcodes
@@ -73,17 +80,17 @@ real EDIABAS format does not use wildcard table references.
 
 **Example**
 ```
-python prg_inspect.py job demo.prg JOB_DEMO
-python prg_inspect.py job demo.prg JOB_DEMO -w 80 -j
-python prg_inspect.py job demo.prg JOB_DEMO --heuristic
+python prg_inspect.py --job JOB_DEMO -f demo.prg
+python prg_inspect.py --job JOB_DEMO -f demo.prg -w 80 -j
+python prg_inspect.py --job JOB_DEMO -f demo.prg --heuristic
 ```
 
 ---
 
-### `table`: Named table dump
+### `--table`: Named table dump
 
 ```
-python prg_inspect.py table <file.prg> <TABLE> [<TABLE> ...] [-w N] [-j]
+python prg_inspect.py --table <TABLE> [<TABLE> ...] -f <file.prg> [-w N] [-j]
 ```
 
 Dumps one or more tables by name (case-insensitive).  Multiple names can be
@@ -91,17 +98,17 @@ provided; each is printed in sequence.
 
 **Example**
 ```
-python prg_inspect.py table demo.prg FORTTEXTE
-python prg_inspect.py table demo.prg SIMPLE_ENUM FORTTEXTE -w
-python prg_inspect.py table demo.prg RECURSIVE_DEMO -j
+python prg_inspect.py --table FORTTEXTE -f demo.prg
+python prg_inspect.py --table SIMPLE_ENUM FORTTEXTE -f demo.prg -w
+python prg_inspect.py --table RECURSIVE_DEMO -f demo.prg -j
 ```
 
 ---
 
-### `dtc`: Fault-code table dump
+### `--dtc`: Fault-code table dump
 
 ```
-python prg_inspect.py dtc <file.prg> [-w N] [-j]
+python prg_inspect.py --dtc -f <file.prg> [-w N] [-j]
 ```
 
 Dumps tables whose names contain `FORTTEXTE` (fault location text).  This is
@@ -109,28 +116,28 @@ the standard DTC table family found in BMW ECU files.
 
 **Example**
 ```
-python prg_inspect.py dtc demo.prg
-python prg_inspect.py dtc demo.prg -w 80
-python prg_inspect.py dtc demo.prg -j
+python prg_inspect.py --dtc -f demo.prg
+python prg_inspect.py --dtc -f demo.prg -w 80
+python prg_inspect.py --dtc -f demo.prg -j
 ```
 
 ---
 
-### `dis`: Bytecode disassembly
+### `--dis`: Bytecode disassembly
 
 ```
-python prg_inspect.py dis <file.prg> <JOB>
+python prg_inspect.py --dis <JOB> [<JOB> ...] -f <file.prg>
 ```
 
-Disassembles the EDIABAS bytecode of the named job.  Each instruction is shown
+Disassembles the EDIABAS bytecode of one or more jobs.  Each instruction is shown
 with its absolute file address, mnemonic, and decoded operands.  Table names
 referenced in the bytecode are listed at the top.  JSON output is not supported
 for this mode.
 
 **Example**
 ```
-python prg_inspect.py dis demo.prg JOB_DEMO
-python prg_inspect.py dis demo.prg READ_FAULT_MEMORY
+python prg_inspect.py --dis JOB_DEMO -f demo.prg
+python prg_inspect.py --dis READ_FAULT_MEMORY -f demo.prg
 ```
 
 ---
