@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PRG Documentation: demo.prg</title>
+    <style>
+        :root {
+            --bg-color: #f8f9fa;
+            --text-color: #212529;
+            --header-bg: #343a40;
+            --header-text: #ffffff;
+            --job-bg: #ffffff;
+            --border-color: #dee2e6;
+            --accent-color: #007bff;
+            --summary-hover: #e9ecef;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.5;
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            margin: 0;
+            padding: 20px;
+        }
+        .header {
+            background: var(--header-bg);
+            color: var(--header-text);
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .header h1 { margin: 0; font-size: 1.8rem; }
+        .header p { margin: 5px 0 0 0; opacity: 0.8; font-size: 0.9rem; }
+
+        .stats {
+            display: flex;
+            gap: 20px;
+            margin-top: 15px;
+            font-size: 0.9rem;
+        }
+        .stat-item {
+            background: rgba(255,255,255,0.1);
+            padding: 5px 12px;
+            border-radius: 4px;
+        }
+        .stat-item a {
+            color: inherit;
+            text-decoration: none;
+        }
+        .stat-item:hover {
+            background: rgba(255,255,255,0.2);
+        }
+
+        details {
+            background: var(--job-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-bottom: 15px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+        summary {
+            padding: 12px 20px;
+            font-weight: 600;
+            cursor: pointer;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            transition: background 0.2s;
+        }
+        summary:hover {
+            background: var(--summary-hover);
+        }
+        summary::after {
+            content: "+";
+            font-size: 1.5rem;
+            line-height: 0;
+            margin-left: 10px;
+        }
+        details[open] summary::after {
+            content: "-";
+        }
+        summary .job-title {
+            display: flex;
+            flex-direction: column;
+        }
+        summary .job-desc {
+            font-weight: normal;
+            font-size: 0.85rem;
+            color: #6c757d;
+            margin-top: 2px;
+        }
+
+        .job-content {
+            padding: 20px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        section {
+            margin-bottom: 25px;
+        }
+        section:last-child { margin-bottom: 0; }
+        h3 {
+            margin-top: 0;
+            font-size: 1.1rem;
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 5px;
+            margin-bottom: 12px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+            margin-bottom: 15px;
+        }
+        th, td {
+            text-align: left;
+            padding: 8px 12px;
+            border: 1px solid var(--border-color);
+        }
+        th {
+            background-color: #f1f3f5;
+            font-weight: 600;
+        }
+        tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+
+        .ref-link {
+            color: var(--accent-color);
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .ref-link:hover { text-decoration: underline; }
+
+        .table-data-container {
+            margin-top: 15px;
+            padding: 15px;
+            background: #fff;
+            border: 1px dashed #adb5bd;
+            border-radius: 4px;
+        }
+        .table-name {
+            font-family: monospace;
+            font-weight: bold;
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 50px;
+            padding: 20px;
+            font-size: 0.8rem;
+            color: #6c757d;
+        }
+
+        #back-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            padding: 12px 24px;
+            background: var(--accent-color);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            cursor: pointer;
+            display: none;
+            z-index: 1000;
+            font-weight: bold;
+            transition: transform 0.2s, background 0.2s;
+        }
+        #back-btn:hover {
+            transform: scale(1.05);
+            background: #0056b3;
+        }
+        #back-btn:active {
+            transform: scale(0.95);
+        }
+
+        @media print {
+            details { box-shadow: none; border: 1px solid #000; break-inside: avoid; }
+            summary::after { display: none; }
+            .header { background: none; color: #000; border: 1px solid #000; box-shadow: none; }
+            #back-btn { display: none !important; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>PRG Documentation: demo.prg</h1>
+        <p>Location: G:\bmw\ag-prg-inspect\examples\demo.prg</p>
+        <div class="stats">
+            <div class="stat-item"><a href="#jobs">Jobs: 3</a></div>
+            <div class="stat-item"><a href="#tables">Tables: 5</a></div>
+            <div class="stat-item">Generated: 2026-03-31 20:43:46</div>
+        </div>
+    </div>
+
+    <div class="jobs">
+        <h2 id="jobs">Jobs</h2>
+        
+            <details id="JOB_DEMO">
+                <summary>
+                    <div class="job-title">
+                        <span>JOB_DEMO</span>
+                        <span class="job-desc">Demonstrates table linkage and description parsing. References table SIMPLE_ENUM and WILDCARD_xxx.</span>
+                    </div>
+                </summary>
+                <div class="job-content">
+                    <section><h3>Description</h3><p>Demonstrates table linkage and description parsing. References table <a href="#table_{m.group(0)}" class="ref-link">{m.group(0)}</a> and WILDCARD_xxx.</p></section>
+                    <section><h3>Arguments</h3><table><thead><tr><th>Name</th><th>Type</th><th>Comment</th></tr></thead><tbody><tr><td>MODE</td><td></td><td>Operation mode selector (see table <a href="#table_{m.group(0)}" class="ref-link">{m.group(0)}</a>).</td></tr></tbody></table></section>
+                    <section><h3>Results</h3><table><thead><tr><th>Name</th><th>Type</th><th>Comment</th></tr></thead><tbody><tr><td>STATUS</td><td></td><td>Return status code.</td></tr></tbody></table></section>
+                    <section><h3>Referenced Tables</h3><ul><li><a href='#table_SIMPLE_ENUM' class='ref-link'>SIMPLE_ENUM <small style='color:#666; font-weight:normal;'>(Comment)</small></a></li></ul></section>
+                </div>
+            </details>
+            
+            <details id="READ_FAULT_MEMORY">
+                <summary>
+                    <div class="job-title">
+                        <span>READ_FAULT_MEMORY</span>
+                        <span class="job-desc">Reads stored fault codes from ECU memory. Uses table FORTTEXTE for fault text lookup.</span>
+                    </div>
+                </summary>
+                <div class="job-content">
+                    <section><h3>Description</h3><p>Reads stored fault codes from ECU memory. Uses table <a href="#table_{m.group(0)}" class="ref-link">{m.group(0)}</a> for fault text lookup.</p></section>
+                    <section><h3>Arguments</h3><table><thead><tr><th>Name</th><th>Type</th><th>Comment</th></tr></thead><tbody><tr><td>MAX_FAULTS</td><td></td><td>Maximum number of faults to return.</td></tr></tbody></table></section>
+                    <section><h3>Results</h3><table><thead><tr><th>Name</th><th>Type</th><th>Comment</th></tr></thead><tbody><tr><td>FAULT_CODE</td><td></td><td>Fault code number (see table <a href="#table_{m.group(0)}" class="ref-link">{m.group(0)}</a>).</td></tr><tr><td>FAULT_TEXT</td><td></td><td>Human-readable fault description string.</td></tr></tbody></table></section>
+                    <section><h3>Referenced Tables</h3><ul><li><a href='#table_FORTTEXTE' class='ref-link'>FORTTEXTE <small style='color:#666; font-weight:normal;'>(Comment)</small></a></li></ul></section>
+                </div>
+            </details>
+            
+            <details id="STATUS_QUERY">
+                <summary>
+                    <div class="job-title">
+                        <span>STATUS_QUERY</span>
+                        <span class="job-desc">Queries the current ECU status. References RECURSIVE_DEMO which links to SUB_TABLE_01.</span>
+                    </div>
+                </summary>
+                <div class="job-content">
+                    <section><h3>Description</h3><p>Queries the current ECU status. References <a href="#table_{m.group(0)}" class="ref-link">{m.group(0)}</a> which links to <a href="#table_{m.group(0)}" class="ref-link">{m.group(0)}</a>.</p></section>
+                    
+                    <section><h3>Results</h3><table><thead><tr><th>Name</th><th>Type</th><th>Comment</th></tr></thead><tbody><tr><td>STATUS_CODE</td><td></td><td>Current ECU operational status.</td></tr></tbody></table></section>
+                    <section><h3>Referenced Tables</h3><ul><li><a href='#table_SUB_TABLE_01' class='ref-link'>SUB_TABLE_01</a></li></ul></section>
+                </div>
+            </details>
+            
+    </div>
+
+    <div class="tables-global">
+        <h2 id="tables">Tables</h2>
+        <div class='table-data-container' id='table_FORTTEXTE'><span class='table-name'>FORTTEXTE</span><table><thead><tr><th>FEHLER_NR</th><th>FEHLER_TEXT</th><th>PFAD_AKTIV</th><th>UMWELTBEDINGUNGEN</th></tr></thead><tbody><tr><td>0x000001</td><td>Supply voltage too low</td><td>0</td><td>-</td></tr><tr><td>0x000002</td><td>Communication timeout on internal CAN bus</td><td>1</td><td>-</td></tr><tr><td>0x000003</td><td>EEPROM checksum error after reset</td><td>0</td><td>-</td></tr><tr><td>0x000004</td><td>Sensor plausibility error: value out of range</td><td>1</td><td>-</td></tr></tbody></table></div><div class='table-data-container' id='table_RECURSIVE_DEMO'><span class='table-name'>RECURSIVE_DEMO</span><table><thead><tr><th>NAME</th><th>SUB_TABLE_REF</th></tr></thead><tbody><tr><td>NestedEntry</td><td><a href="#table_{m.group(0)}" class="ref-link">{m.group(0)}</a></td></tr></tbody></table></div><div class='table-data-container' id='table_SIMPLE_ENUM'><span class='table-name'>SIMPLE_ENUM</span><table><thead><tr><th>WERT</th><th>TEXT</th></tr></thead><tbody><tr><td>0x01</td><td>Feature On</td></tr><tr><td>0x02</td><td>Feature Off</td></tr></tbody></table></div><div class='table-data-container' id='table_SUB_TABLE_01'><span class='table-name'>SUB_TABLE_01</span><table><thead><tr><th>ID</th><th>VAL</th></tr></thead><tbody><tr><td>42</td><td>The answer to everything</td></tr></tbody></table></div><div class='table-data-container' id='table_WILDCARD_START'><span class='table-name'>WILDCARD_START</span><table><thead><tr><th>HEX</th><th>ACTION</th></tr></thead><tbody><tr><td>0x11</td><td>Execute Start Sequence</td></tr></tbody></table></div>
+    </div>
+
+    <button id="back-btn" onclick="window.history.back()">← Back</button>
+
+    <footer>
+        Generated by prg_doc_gen.py
+    </footer>
+
+    <script>
+        // Show/hide back button based on hash presence
+        function updateBackBtn() {
+            const btn = document.getElementById('back-btn');
+            if (window.location.hash && window.location.hash !== '#jobs' && window.location.hash !== '#tables') {
+                btn.style.display = 'block';
+            } else {
+                btn.style.display = 'none';
+            }
+        }
+        window.addEventListener('hashchange', updateBackBtn);
+        window.addEventListener('load', updateBackBtn);
+    </script>
+</body>
+</html>

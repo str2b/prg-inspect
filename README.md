@@ -142,6 +142,31 @@ python prg_inspect.py --dis READ_FAULT_MEMORY -f demo.prg
 
 ---
 
+## Documentation Generator
+
+`prg_doc_gen.py` is a high-level wrapper that generates a self-contained, interactive HTML documentation report for a `.prg` file.
+
+**Usage**
+```
+python prg_doc_gen.py -f <file.prg> [-o <output.html>] [--heuristic]
+```
+
+**Features**
+- **Interactive Jobs**: Uses native HTML `<details>` tags for JS-free expanding/collapsing of job details.
+- **Consolidated Tables**: All tables are placed in a global "Tables" section to eliminate data redundancy and reduce file size.
+- **Navigation**: 
+  - **Cross-Linking**: Descriptions and comments automatically link to table definitions.
+  - **Back Button**: A floating "← Back" button allows you to instantly return to your last location after following a link.
+  - **Header Links**: Clickable summary metrics for quick section jumping.
+- **Support**: Full UTF-8 support for German umlauts (ä, ö, ü, ß).
+
+**Example**
+```
+python prg_doc_gen.py -f examples/demo.prg --heuristic
+```
+
+---
+
 ## Knowledge sources
 
 Binary file format, opcode definitions, addressing modes, and the XOR-0xF7
