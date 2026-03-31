@@ -828,8 +828,9 @@ def cmd_job(args):
         )
         all_refs_display = sorted(code_refs + implicit_refs)
 
-        # Collect table data
+        # Collect table data (BFS: seed from direct refs, follow cell-name links)
         table_data_map = {}
+        direct_ref_set = set(all_refs)
         queue = list(all_refs)
         seen = set()
         while queue:
@@ -845,8 +846,16 @@ def cmd_job(args):
                         potential = str(cell).strip().upper()
                         if potential in all_tables and potential not in seen:
                             queue.append(potential)
-            except Exception as e:
+            except Exception:
                 table_data_map[t_name] = []
+
+        # Promote recursively-discovered tables into the display lists
+        for t_name in sorted(table_data_map):
+            if t_name not in direct_ref_set:
+                all_refs.append(t_name)
+                all_refs_display.append(f"{t_name} (Linked via Table Cell)")
+        all_refs = sorted(set(all_refs))
+        all_refs_display = sorted(set(all_refs_display))
 
         if args.json:
             comments_raw = desc.get("comments", []) if desc else []

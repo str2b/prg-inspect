@@ -65,18 +65,18 @@ python prg_inspect.py --job <JOB> [<JOB> ...] -f <file.prg> [-w N] [-j] [--heuri
 
 Displays for one or more jobs:
 - The job's embedded description (comments, arguments, results)
-- All tables referenced by the job, found via two methods:
+- All tables referenced by the job, found via three methods (always active):
   1. **Bytecode scan**: string literals passed to `tabset` and similar opcodes
   2. **Comment scan**: `table <Name>` patterns in RESULTCOMMENT/ARGCOMMENT lines, or directly in Argument/Result names
-
-Referenced tables are dumped recursively: if a table cell contains the name of
-another table, that table is fetched and displayed too.
+  3. **Recursive cell scan**: if a cell value in a discovered table matches a known table name, that table is fetched and followed transitively (BFS)
 
 **Options**
 
-`--heuristic`: additionally expand `_XXX` suffix patterns found in comment
-text into prefix-matched table names.  This is a non-standard heuristic; the
-real EDIABAS format does not use wildcard table references.
+`--heuristic`: enables a fourth, optional discovery method - `_XXX` suffix
+patterns found in comment text are expanded into all table names sharing that
+prefix (e.g. `table DID_XXX` => all tables starting with `DID_`).
+This is a non-standard heuristic; the real EDIABAS format does not use wildcard
+table references.
 
 **Example**
 ```
