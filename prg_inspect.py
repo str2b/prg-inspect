@@ -412,24 +412,30 @@ class PRGReader:
     # Table data extraction
     # ------------------------------------------------------------------
     def extract_table_data(
-        self, table_info: dict, all_tables: dict, max_rows: int = 100
+        self, table_info: dict, all_tables: dict, max_rows: int = 1000
     ) -> list:
         """
         Decode a table's cell data.
         Returns list[list[str]] where row 0 is treated as the header.
         """
-        ptrs = sorted(t["ptr"] for t in all_tables.values())
         ptr = table_info["ptr"]
+        cols = max(1, table_info["cols"])
+        # PRG tables have (rows) data rows + 1 header row at the start.
+        declared_rows = table_info["rows"] + 1
+
+        # Use 1MB buffer if no next table found.
+        ptrs = sorted(t["ptr"] for t in all_tables.values())
         try:
             idx = ptrs.index(ptr)
-            size = ptrs[idx + 1] - ptr if idx + 1 < len(ptrs) else 500_000
+            available_size = ptrs[idx + 1] - ptr if idx + 1 < len(ptrs) else 1024 * 1024
         except ValueError:
-            size = 500_000
+            available_size = 1024 * 1024
 
         with open(self.path, "rb") as f:
             f.seek(ptr)
-            raw = xor_deobfuscate(f.read(size))
+            raw = xor_deobfuscate(f.read(available_size))
 
+        # Split by null terminator and decode.
         raw_parts = raw.split(b"\x00")
         parts = []
         for p in raw_parts:
@@ -437,20 +443,22 @@ class PRGReader:
             cell = re.sub(r"[\x00-\x1f\x7f]", " ", cell).strip()
             parts.append(cell)
 
-        cols = max(1, table_info["cols"])
-        total_rows = len(parts) // cols
-        m_rows = table_info["rows"]
-        if m_rows > total_rows:
-            m_rows = total_rows
-        actual_rows = min(total_rows, max_rows)
+        # STICK TO DECLARED ROWS to avoid over-reading garbage into cells.
+        actual_rows = min(declared_rows, max_rows)
 
         extracted = []
         for r in range(actual_rows):
-            row = parts[r * cols : (r + 1) * cols]
+            start = r * cols
+            end = (r + 1) * cols
+            if end > len(parts):
+                break
+            row = parts[start:end]
+            # Only add if it's not a purely empty row at the very end
             if any(row):
                 extracted.append(row)
-            elif r > 0:
+            elif r > 0:  # Stop at the first truly empty row after header
                 break
+
         return extracted
 
     # ------------------------------------------------------------------
@@ -807,24 +815,37 @@ def cmd_job(args):
         implicit_refs = []
         if all_tables:
             for c in desc.get("comments", []):
-                _find_table_refs_in_text(c, all_tables, code_refs, implicit_refs, heuristic)
+                _find_table_refs_in_text(
+                    c, all_tables, code_refs, implicit_refs, heuristic
+                )
             for a in desc.get("args", []):
                 arg_name = a.get("name", "").upper()
                 if arg_name in all_tables and arg_name not in code_refs:
                     implicit_refs.append(f"{arg_name} (Linked via Argument Match)")
                 _find_table_refs_in_text(
-                    a.get("comment", ""), all_tables, code_refs, implicit_refs, heuristic
+                    a.get("comment", ""),
+                    all_tables,
+                    code_refs,
+                    implicit_refs,
+                    heuristic,
                 )
             for r in desc.get("results", []):
                 res_name = r.get("name", "").upper()
                 if res_name in all_tables and res_name not in code_refs:
                     implicit_refs.append(f"{res_name} (Linked via Result Match)")
                 _find_table_refs_in_text(
-                    r.get("comment", ""), all_tables, code_refs, implicit_refs, heuristic
+                    r.get("comment", ""),
+                    all_tables,
+                    code_refs,
+                    implicit_refs,
+                    heuristic,
                 )
 
         all_refs = sorted(
-            set(code_refs + [i.split(" (Linked")[0].strip().upper() for i in implicit_refs])
+            set(
+                code_refs
+                + [i.split(" (Linked")[0].strip().upper() for i in implicit_refs]
+            )
         )
         all_refs_display = sorted(code_refs + implicit_refs)
 
@@ -940,19 +961,20 @@ def cmd_table(args):
     reader = PRGReader(args.file)
     all_tables = reader.read_table_dir()
     json_output = {"file": args.file, "tables": []}
-    
+
     for table_name_raw in args.table:
         table_name = table_name_raw.upper()
         # Case-insensitive lookup
         match = next((k for k in all_tables if k.upper() == table_name), None)
         if match is None:
             available = sorted(all_tables.keys())
-            print(f"Table '{table_name_raw}' not found in {args.file}.")
-            print(
+            msg = (
+                f"Table '{table_name_raw}' not found in {args.file}.\n"
                 f"Available tables ({len(available)}): "
                 + ", ".join(available[:20])
                 + (" ..." if len(available) > 20 else "")
             )
+            print(msg, file=sys.stderr)
             if not args.json:
                 print()
             continue
@@ -1026,12 +1048,14 @@ def cmd_dis(args):
         if target_addr is None:
             # List available jobs as a hint
             jobs = reader.read_job_dir()
-            print(f"Job '{job_name_raw}' not found in {args.file}.")
-            print(
+            msg = (
+                f"Job '{job_name_raw}' not found in {args.file}.\n"
                 "Available jobs: "
                 + ", ".join(n for n, _ in sorted(jobs, key=lambda x: x[0]))
             )
-            print()
+            print(msg, file=sys.stderr)
+            if not args.json:
+                print()
             continue
 
         print(f"=== Disassembly: {job_name} @ 0x{target_addr:X} ===")
@@ -1064,11 +1088,21 @@ Examples:
     )
 
     mode_group = parser.add_mutually_exclusive_group(required=True)
-    mode_group.add_argument("--prg",   action="store_true",  help="Architectural overview: jobs + tables")
-    mode_group.add_argument("--job",   metavar="JOB", nargs="+", help="Deep job dump (job name)")
-    mode_group.add_argument("--table", metavar="TABLE", nargs="+", help="Dump named table(s)")
-    mode_group.add_argument("--dtc",   action="store_true",  help="Dump DTC tables (FORTTEXTE)")
-    mode_group.add_argument("--dis",   metavar="JOB", nargs="+", help="Disassemble job bytecode")
+    mode_group.add_argument(
+        "--prg", action="store_true", help="Architectural overview: jobs + tables"
+    )
+    mode_group.add_argument(
+        "--job", metavar="JOB", nargs="+", help="Deep job dump (job name)"
+    )
+    mode_group.add_argument(
+        "--table", metavar="TABLE", nargs="+", help="Dump named table(s)"
+    )
+    mode_group.add_argument(
+        "--dtc", action="store_true", help="Dump DTC tables (FORTTEXTE)"
+    )
+    mode_group.add_argument(
+        "--dis", metavar="JOB", nargs="+", help="Disassemble job bytecode"
+    )
 
     parser.add_argument("-f", "--file", required=True, help="Path to .prg file")
     parser.add_argument(
@@ -1098,7 +1132,7 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = build_parser()
     args = parser.parse_args()
-    
+
     if args.job:
         cmd_job(args)
     elif args.dis:
@@ -1109,7 +1143,6 @@ def main():
         cmd_dtc(args)
     elif args.prg:
         cmd_prg(args)
-
 
 
 if __name__ == "__main__":

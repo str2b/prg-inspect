@@ -6,7 +6,7 @@ Description
 -----------
 Generates a self-contained, interactive HTML documentation report for a PRG file.
 Aggregates job descriptions, table links, and global table definitions.
-To optimize performance and eliminate data redundancy, all tables are stored in 
+To optimize performance and eliminate data redundancy, all tables are stored in
 a global section and cross-referenced via anchor links.
 
 Usage
@@ -266,6 +266,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
+
 # ===========================================================================
 # Generator Logic
 # ===========================================================================
@@ -274,7 +275,7 @@ class DocGenerator:
         self.prg_file = prg_file
         self.heuristic = heuristic
         self.inspector_cmd = ["python", "prg_inspect.py"]
-        
+
     def _run_inspect(self, extra_args):
         cmd = self.inspector_cmd + extra_args + ["-f", self.prg_file, "-j"]
         try:
@@ -299,17 +300,17 @@ class DocGenerator:
         tables_list = overview.get("tables", [])
         total_jobs = len(jobs_list)
         all_job_data = []
-        global_tables = {} # name -> data
+        global_tables = {}  # name -> data
 
         print(f"Collecting deep details for {total_jobs} jobs...")
         for i, job_meta in enumerate(jobs_list):
             job_name = job_meta["name"]
             print(f" [{i+1}/{total_jobs}] {job_name}...", end="\x1b[K\r")
-            
+
             job_args = ["--job", job_name]
             if self.heuristic:
                 job_args.append("--heuristic")
-            
+
             job_details = self._run_inspect(job_args)
             if job_details and job_details.get("jobs"):
                 job_info = job_details["jobs"][0]
@@ -322,11 +323,15 @@ class DocGenerator:
         # Fetch remaining tables that weren't referenced by any job
         total_tables_count = len(tables_list)
         tables_from_jobs = len(global_tables)
-        remaining_tables = [t["name"] for t in tables_list if t["name"] not in global_tables]
-        
+        remaining_tables = [
+            t["name"] for t in tables_list if t["name"] not in global_tables
+        ]
+
         if remaining_tables:
-            print(f"\nCollected {tables_from_jobs} tables from jobs. "
-                  f"Fetching {len(remaining_tables)} remaining (Total: {total_tables_count})...")
+            print(
+                f"\nCollected {tables_from_jobs} tables from jobs. "
+                f"Fetching {len(remaining_tables)} remaining (Total: {total_tables_count})..."
+            )
             # Batch fetch in chunks to avoid command line length limits
             chunk_size = 50
             for i in range(0, len(remaining_tables), chunk_size):
@@ -343,23 +348,27 @@ class DocGenerator:
         return True
 
     def _link_tables(self, text, pattern):
-        if not text or not pattern: return text
-        return pattern.sub(lambda m: f'<a href="#table_{{m.group(0)}}" class="ref-link">{{m.group(0)}}</a>', text)
+        if not text or not pattern:
+            return text
+        return pattern.sub(
+            lambda m: f'<a href="#table_{m.group(0)}" class="ref-link">{m.group(0)}</a>',
+            text,
+        )
 
     def _format_table(self, data, caption=None, link_pattern=None):
         if not data:
             return "<p>Empty table</p>"
-        
+
         html = "<table>"
         if caption:
             html += f"<caption style='text-align:left; font-weight:bold; margin-bottom:5px;'>{caption}</caption>"
-        
+
         # Header (row 0)
         html += "<thead><tr>"
         for h in data[0]:
             html += f"<th>{h}</th>"
         html += "</tr></thead>"
-        
+
         # Rows
         html += "<tbody>"
         for row in data[1:]:
@@ -378,24 +387,24 @@ class DocGenerator:
         filename = os.path.basename(self.prg_file)
         filepath = os.path.abspath(self.prg_file)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
         job_count = len(overview.get("jobs", []))
         table_count = len(overview.get("tables", []))
-        
+
         # Build a single regex pattern for all table names to optimize linking
         # Sort by length descending to avoid partial matches
         sorted_names = sorted(global_tables.keys(), key=len, reverse=True)
         link_pattern = None
         if sorted_names:
             regex_parts = [re.escape(name) for name in sorted_names]
-            link_pattern = re.compile(r'\b(' + '|'.join(regex_parts) + r')\b')
+            link_pattern = re.compile(r"\b(" + "|".join(regex_parts) + r")\b")
 
         jobs_html = ""
         for job in detailed_jobs:
             name = job["job"]
             desc_meta = job.get("description", {})
             comments = " ".join(desc_meta.get("comments", []))
-            
+
             # Link comments
             linked_comments = self._link_tables(comments, link_pattern)
 
@@ -404,16 +413,16 @@ class DocGenerator:
                 args_html = "<section><h3>Arguments</h3>"
                 args_html += "<table><thead><tr><th>Name</th><th>Type</th><th>Comment</th></tr></thead><tbody>"
                 for arg in desc_meta["args"]:
-                    linked_arg_comment = self._link_tables(arg['comment'], link_pattern)
+                    linked_arg_comment = self._link_tables(arg["comment"], link_pattern)
                     args_html += f"<tr><td>{arg['name']}</td><td>{arg['type']}</td><td>{linked_arg_comment}</td></tr>"
                 args_html += "</tbody></table></section>"
-            
+
             res_html = ""
             if desc_meta.get("results"):
                 res_html = "<section><h3>Results</h3>"
                 res_html += "<table><thead><tr><th>Name</th><th>Type</th><th>Comment</th></tr></thead><tbody>"
                 for res in desc_meta["results"]:
-                    linked_res_comment = self._link_tables(res['comment'], link_pattern)
+                    linked_res_comment = self._link_tables(res["comment"], link_pattern)
                     res_html += f"<tr><td>{res['name']}</td><td>{res['type']}</td><td>{linked_res_comment}</td></tr>"
                 res_html += "</tbody></table></section>"
 
@@ -432,7 +441,7 @@ class DocGenerator:
                             reason = ref_disp.split("(Linked via ")[1].rstrip(")")
                             display_name += f" <small style='color:#666; font-weight:normal;'>({reason})</small>"
                             break
-                    
+
                     tables_refs_html += f"<li><a href='#table_{t_name}' class='ref-link'>{display_name}</a></li>"
                 tables_refs_html += "</ul></section>"
 
@@ -455,7 +464,9 @@ class DocGenerator:
 
         tables_html_global = ""
         for t_name, t_data in sorted(global_tables.items()):
-            tables_html_global += f"<div class='table-data-container' id='table_{t_name}'>"
+            tables_html_global += (
+                f"<div class='table-data-container' id='table_{t_name}'>"
+            )
             tables_html_global += f"<span class='table-name'>{t_name}</span>"
             tables_html_global += self._format_table(t_data, link_pattern=link_pattern)
             tables_html_global += "</div>"
@@ -467,11 +478,12 @@ class DocGenerator:
             table_count=table_count,
             timestamp=timestamp,
             jobs_html=jobs_html,
-            tables_html_global=tables_html_global
+            tables_html_global=tables_html_global,
         )
-        
+
         with open(output_file, "w", encoding="utf-8") as f:
             f.write(final_html)
+
 
 # ===========================================================================
 # Command dispatcher
@@ -481,13 +493,14 @@ def cmd_generate(args):
     if not args.output:
         base = os.path.splitext(args.file)[0]
         args.output = base + ".html"
-        
+
     gen = DocGenerator(args.file, args.heuristic)
     if gen.generate(args.output):
         print(f"Documentation successfully generated at: {args.output}")
     else:
         print("Documentation generation failed.")
         sys.exit(1)
+
 
 # ===========================================================================
 # Argument parser
@@ -503,16 +516,19 @@ Examples:
   prg_doc_gen.py -f ecufile.prg -o my_doc.html --heuristic
 """,
     )
-    
+
     parser.add_argument("-f", "--file", required=True, help="Path to .prg file")
-    parser.add_argument("-o", "--output", help="Output HTML file path (default: <input>.html)")
     parser.add_argument(
-        "--heuristic", 
-        action="store_true", 
-        help="Enable heuristic table matching (passed to prg_inspect.py)"
+        "-o", "--output", help="Output HTML file path (default: <input>.html)"
     )
-    
+    parser.add_argument(
+        "--heuristic",
+        action="store_true",
+        help="Enable heuristic table matching (passed to prg_inspect.py)",
+    )
+
     return parser
+
 
 # ===========================================================================
 # Entry point
@@ -521,8 +537,9 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = build_parser()
     args = parser.parse_args()
-    
+
     cmd_generate(args)
+
 
 if __name__ == "__main__":
     main()
