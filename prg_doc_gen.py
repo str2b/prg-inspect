@@ -6,8 +6,7 @@ Description
 -----------
 Generates a self-contained, interactive HTML documentation report for a PRG file.
 Aggregates job descriptions, table links, and global table definitions.
-To optimize performance and eliminate data redundancy, all tables are stored in
-a global section and cross-referenced via anchor links.
+All tables are stored once in a global section and cross-referenced via anchor links.
 
 Usage
 -----
@@ -29,7 +28,8 @@ from datetime import datetime
 # ===========================================================================
 # HTML Template
 # ===========================================================================
-HTML_TEMPLATE = """<!DOCTYPE html>
+HTML_TEMPLATE = """\
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -37,227 +37,237 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <title>PRG Documentation: {filename}</title>
     <style>
         :root {{
-            --bg-color: #f8f9fa;
-            --text-color: #212529;
-            --header-bg: #343a40;
-            --header-text: #ffffff;
-            --job-bg: #ffffff;
-            --border-color: #dee2e6;
-            --accent-color: #007bff;
-            --summary-hover: #e9ecef;
+            --bg:           #f4f5f7;
+            --card-bg:      #ffffff;
+            --text:         #212529;
+            --text-muted:   #6c757d;
+            --border:       #dee2e6;
+            --border-hover: #adb5bd;
+            --accent:       #007bff;
+            --accent-dim:   rgba(0,123,255,0.08);
+            --header-bg:    #212529;
+            --hover-bg:     #f1f3f5;
+            --tag-bg:       #f1f3f5;
         }}
+        *, *::before, *::after {{ box-sizing: border-box; }}
         body {{
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                         "Helvetica Neue", Arial, sans-serif;
             line-height: 1.5;
-            color: var(--text-color);
-            background-color: var(--bg-color);
+            color: var(--text);
+            background: var(--bg);
             margin: 0;
             padding: 20px;
+            max-width: 1200px;
+            margin-inline: auto;
         }}
-        .header {{
+        /* Page header */
+        .page-header {{
             background: var(--header-bg);
-            color: var(--header-text);
-            padding: 20px;
+            color: #fff;
+            padding: 20px 24px;
             border-radius: 8px;
-            margin-bottom: 30px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 32px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
         }}
-        .header h1 {{ margin: 0; font-size: 1.8rem; }}
-        .header p {{ margin: 5px 0 0 0; opacity: 0.8; font-size: 0.9rem; }}
-
-        .stats {{
-            display: flex;
-            gap: 20px;
-            margin-top: 15px;
-            font-size: 0.9rem;
+        .page-header h1 {{ margin: 0 0 4px; font-size: 1.6rem; }}
+        .page-header p  {{ margin: 0; opacity: 0.65; font-size: 0.85rem; }}
+        .page-header .stats {{
+            display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap;
         }}
-        .stat-item {{
-            background: rgba(255,255,255,0.1);
-            padding: 5px 12px;
-            border-radius: 4px;
+        .page-header .stat {{
+            background: rgba(255,255,255,0.12);
+            padding: 3px 12px;
+            border-radius: 20px;
+            font-size: 0.84rem;
         }}
-        .stat-item a {{
-            color: inherit;
-            text-decoration: none;
+        .page-header .stat a {{ color: inherit; text-decoration: none; }}
+        .page-header .stat:hover {{ background: rgba(255,255,255,0.2); }}
+        /* Section headings */
+        .section-heading {{
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin: 32px 0 10px;
+            padding-bottom: 6px;
+            border-bottom: 2px solid var(--border);
         }}
-        .stat-item:hover {{
-            background: rgba(255,255,255,0.2);
-        }}
-
-        details {{
-            background: var(--job-bg);
-            border: 1px solid var(--border-color);
+        /* Shared card */
+        .card {{
+            background: var(--card-bg);
+            border: 1px solid var(--border);
             border-radius: 6px;
-            margin-bottom: 15px;
+            margin-bottom: 10px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
             overflow: hidden;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
         }}
-        summary {{
-            padding: 12px 20px;
+        /* Job cards (collapsible) */
+        details.card > summary {{
+            padding: 11px 16px;
             font-weight: 600;
             cursor: pointer;
             list-style: none;
             display: flex;
             align-items: center;
             justify-content: space-between;
-            transition: background 0.2s;
+            gap: 12px;
+            transition: background 0.15s;
         }}
-        summary:hover {{
-            background: var(--summary-hover);
-        }}
-        summary::after {{
+        details.card > summary:hover {{ background: var(--hover-bg); }}
+        details.card > summary::after {{
             content: "+";
-            font-size: 1.5rem;
-            line-height: 0;
-            margin-left: 10px;
+            font-size: 1.3rem;
+            line-height: 1;
+            flex-shrink: 0;
+            color: var(--text-muted);
         }}
-        details[open] summary::after {{
-            content: "-";
-        }}
-        summary .job-title {{
-            display: flex;
-            flex-direction: column;
-        }}
-        summary .job-desc {{
+        details.card[open] > summary::after {{ content: "−"; }}
+        .job-title {{ display: flex; flex-direction: column; min-width: 0; }}
+        .job-name  {{ font-family: monospace; font-size: 0.95rem; }}
+        .job-desc  {{
             font-weight: normal;
-            font-size: 0.85rem;
-            color: #6c757d;
+            font-size: 0.78rem;
+            color: var(--text-muted);
             margin-top: 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }}
-
-        .job-content {{
-            padding: 20px;
-            border-top: 1px solid var(--border-color);
+        /* Table cards (static) — same card, accent left stripe instead of dark header */
+        .table-card-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 9px 16px;
+            border-left: 4px solid var(--accent);
+            background: var(--accent-dim);
         }}
-
-        section {{
-            margin-bottom: 25px;
+        .table-card-name {{
+            font-family: monospace;
+            font-weight: 700;
+            font-size: 0.95rem;
         }}
-        section:last-child {{ margin-bottom: 0; }}
-        h3 {{
-            margin-top: 0;
-            font-size: 1.1rem;
-            border-bottom: 2px solid var(--border-color);
-            padding-bottom: 5px;
-            margin-bottom: 12px;
+        .table-card-meta {{
+            font-size: 0.76rem;
+            color: var(--text-muted);
         }}
-
+        /* Card body shared by both jobs and tables */
+        .card-body {{
+            padding: 16px;
+            border-top: 1px solid var(--border);
+        }}
+        /* Inner sections */
+        .inner-section {{ margin-bottom: 18px; }}
+        .inner-section:last-child {{ margin-bottom: 0; }}
+        .inner-heading {{
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: var(--text-muted);
+            margin: 0 0 7px;
+        }}
+        /* Data tables */
         table {{
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.9rem;
-            margin-bottom: 15px;
+            font-size: 0.86rem;
+            margin: 0;
         }}
         th, td {{
             text-align: left;
-            padding: 8px 12px;
-            border: 1px solid var(--border-color);
+            padding: 6px 10px;
+            border: 1px solid var(--border);
         }}
-        th {{
-            background-color: #f1f3f5;
-            font-weight: 600;
+        th {{ background: #f8f9fa; font-weight: 600; }}
+        tr:nth-child(even) {{ background: #fafbfc; }}
+        /* Reference pill lists */
+        .ref-list {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            list-style: none;
+            padding: 0;
+            margin: 0;
         }}
-        tr:nth-child(even) {{
-            background-color: #f8f9fa;
-        }}
-
-        .ref-link {{
-            color: var(--accent-color);
-            text-decoration: none;
-            font-weight: 500;
-        }}
-        .ref-link:hover {{ text-decoration: underline; }}
-
-        .table-data-container {{
-            margin-top: 15px;
-            padding: 15px;
-            background: #fff;
-            border: 1px dashed #adb5bd;
+        .ref-item {{
+            background: var(--tag-bg);
+            border: 1px solid var(--border);
             border-radius: 4px;
+            padding: 1px 9px;
+            font-size: 0.81rem;
+            transition: background 0.15s, border-color 0.15s;
         }}
-        .table-name {{
-            font-family: monospace;
-            font-weight: bold;
-            display: block;
-            margin-bottom: 5px;
-        }}
-
+        .ref-item:hover {{ background: #e9ecef; border-color: var(--border-hover); }}
+        .ref-item a {{ color: var(--accent); text-decoration: none; font-weight: 500; }}
+        .ref-item a:hover {{ text-decoration: underline; }}
+        /* Inline table name hyperlinks */
+        .ref-link {{ color: var(--accent); text-decoration: none; font-weight: 500; }}
+        .ref-link:hover {{ text-decoration: underline; }}
+        /* Description prose */
+        .desc-text {{ font-size: 0.875rem; line-height: 1.6; margin: 0; }}
+        /* Footer */
         footer {{
             text-align: center;
-            margin-top: 50px;
-            padding: 20px;
-            font-size: 0.8rem;
-            color: #6c757d;
+            margin-top: 48px;
+            padding: 16px;
+            font-size: 0.76rem;
+            color: var(--text-muted);
         }}
-
+        /* Back button */
         #back-btn {{
             position: fixed;
-            bottom: 30px;
-            right: 30px;
-            padding: 12px 24px;
-            background: var(--accent-color);
-            color: white;
+            bottom: 28px; right: 28px;
+            padding: 10px 22px;
+            background: var(--accent);
+            color: #fff;
             border: none;
             border-radius: 50px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            box-shadow: 0 4px 14px rgba(0,123,255,0.35);
             cursor: pointer;
             display: none;
             z-index: 1000;
-            font-weight: bold;
-            transition: transform 0.2s, background 0.2s;
+            font-weight: 600;
+            font-size: 0.88rem;
+            transition: transform 0.15s, background 0.15s;
         }}
-        #back-btn:hover {{
-            transform: scale(1.05);
-            background: #0056b3;
-        }}
-        #back-btn:active {{
-            transform: scale(0.95);
-        }}
-
+        #back-btn:hover  {{ transform: scale(1.05); background: #0056b3; }}
+        #back-btn:active {{ transform: scale(0.95); }}
         @media print {{
-            details {{ box-shadow: none; border: 1px solid #000; break-inside: avoid; }}
-            summary::after {{ display: none; }}
-            .header {{ background: none; color: #000; border: 1px solid #000; box-shadow: none; }}
+            .card {{ box-shadow: none; break-inside: avoid; }}
+            details.card > summary::after {{ display: none; }}
+            .page-header {{ background: none; color: #000; border: 1px solid #000; box-shadow: none; }}
             #back-btn {{ display: none !important; }}
         }}
     </style>
 </head>
 <body>
-    <div class="header">
+    <div class="page-header">
         <h1>PRG Documentation: {filename}</h1>
-        <p>Location: {filepath}</p>
+        <p>{filepath}</p>
         <div class="stats">
-            <div class="stat-item"><a href="#jobs">Jobs: {job_count}</a></div>
-            <div class="stat-item"><a href="#tables">Tables: {table_count}</a></div>
-            <div class="stat-item">Generated: {timestamp}</div>
+            <div class="stat"><a href="#jobs">Jobs: {job_count}</a></div>
+            <div class="stat"><a href="#tables">Tables: {table_count}</a></div>
+            <div class="stat">Generated: {timestamp}</div>
         </div>
     </div>
 
-    <div class="jobs">
-        <h2 id="jobs">Jobs</h2>
-        {jobs_html}
-    </div>
+    <div class="section-heading" id="jobs">Jobs</div>
+    {jobs_html}
 
-    <div class="tables-global">
-        <h2 id="tables">Tables</h2>
-        {tables_html_global}
-    </div>
+    <div class="section-heading" id="tables">Tables</div>
+    {tables_html_global}
 
-    <button id="back-btn" onclick="window.history.back()">← Back</button>
-
-    <footer>
-        Generated by prg_doc_gen.py
-    </footer>
+    <button id="back-btn" onclick="window.history.back()">&#8592; Back</button>
+    <footer>Generated by prg_doc_gen.py</footer>
 
     <script>
-        // Show/hide back button based on hash presence
         function updateBackBtn() {{
             const btn = document.getElementById('back-btn');
-            if (window.location.hash && window.location.hash !== '#jobs' && window.location.hash !== '#tables') {{
-                btn.style.display = 'block';
-            }} else {{
-                btn.style.display = 'none';
-            }}
+            const h = window.location.hash;
+            btn.style.display = (h && h !== '#jobs' && h !== '#tables') ? 'block' : 'none';
         }}
         window.addEventListener('hashchange', updateBackBtn);
         window.addEventListener('load', updateBackBtn);
@@ -276,6 +286,9 @@ class DocGenerator:
         self.heuristic = heuristic
         self.inspector_cmd = ["python", "prg_inspect.py"]
 
+    # ------------------------------------------------------------------
+    # Data acquisition
+    # ------------------------------------------------------------------
     def _run_inspect(self, extra_args):
         cmd = self.inspector_cmd + extra_args + ["-f", self.prg_file, "-j"]
         try:
@@ -285,22 +298,21 @@ class DocGenerator:
             return json.loads(result.stdout)
         except subprocess.CalledProcessError as e:
             print(f"Error running prg_inspect.py: {e.stderr}", file=sys.stderr)
-            return None
         except Exception as e:
             print(f"Failed to parse JSON: {e}", file=sys.stderr)
-            return None
+        return None
 
     def generate(self, output_file):
-        print(f"Reading architectural overview...")
+        print("Reading architectural overview...")
         overview = self._run_inspect(["--prg"])
         if not overview:
             return False
 
-        jobs_list = overview.get("jobs", [])
-        tables_list = overview.get("tables", [])
-        total_jobs = len(jobs_list)
-        all_job_data = []
-        global_tables = {}  # name -> data
+        jobs_list      = overview.get("jobs", [])
+        tables_list    = overview.get("tables", [])
+        total_jobs     = len(jobs_list)
+        all_job_data   = []
+        global_tables  = {}  # name -> row data
 
         print(f"Collecting deep details for {total_jobs} jobs...")
         for i, job_meta in enumerate(jobs_list):
@@ -315,39 +327,45 @@ class DocGenerator:
             if job_details and job_details.get("jobs"):
                 job_info = job_details["jobs"][0]
                 all_job_data.append(job_info)
-                # Sink tables into global map
                 for t_name, t_data in job_info.get("table_data", {}).items():
-                    if t_name not in global_tables:
-                        global_tables[t_name] = t_data
+                    global_tables.setdefault(t_name, t_data)
 
-        # Fetch remaining tables that weren't referenced by any job
+        # Fetch tables not referenced by any job
         total_tables_count = len(tables_list)
-        tables_from_jobs = len(global_tables)
-        remaining_tables = [
-            t["name"] for t in tables_list if t["name"] not in global_tables
-        ]
+        tables_from_jobs   = len(global_tables)
+        remaining_tables   = [t["name"] for t in tables_list if t["name"] not in global_tables]
 
         if remaining_tables:
             print(
                 f"\nCollected {tables_from_jobs} tables from jobs. "
                 f"Fetching {len(remaining_tables)} remaining (Total: {total_tables_count})..."
             )
-            # Batch fetch in chunks to avoid command line length limits
-            chunk_size = 50
-            for i in range(0, len(remaining_tables), chunk_size):
-                chunk = remaining_tables[i : i + chunk_size]
+            for i in range(0, len(remaining_tables), 50):
+                chunk = remaining_tables[i : i + 50]
                 table_details = self._run_inspect(["--table"] + chunk)
                 if table_details and table_details.get("tables"):
                     for t_info in table_details["tables"]:
-                        global_tables[t_info["name"]] = t_info.get("data", [])
+                        global_tables.setdefault(t_info["name"], t_info.get("data", []))
         else:
             print(f"\nAll {total_tables_count} tables already collected from jobs.")
 
-        print(f"Building HTML documentation...")
+        print("Building HTML documentation...")
         self._write_html(overview, all_job_data, global_tables, output_file)
         return True
 
+    # ------------------------------------------------------------------
+    # Rendering helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _build_link_pattern(table_names):
+        """Compile a single regex matching any table name as a whole word."""
+        if not table_names:
+            return None
+        parts = [re.escape(n) for n in sorted(table_names, key=len, reverse=True)]
+        return re.compile(r"\b(" + "|".join(parts) + r")\b")
+
     def _link_tables(self, text, pattern):
+        """Hyperlink bare table names found in free-form text."""
         if not text or not pattern:
             return text
         return pattern.sub(
@@ -355,123 +373,164 @@ class DocGenerator:
             text,
         )
 
-    def _format_table(self, data, caption=None, link_pattern=None):
+    def _render_data_table(self, data, link_pattern=None):
+        """Render a 2-D list as an HTML <table> (row 0 = header)."""
         if not data:
-            return "<p>Empty table</p>"
-
-        html = "<table>"
-        if caption:
-            html += f"<caption style='text-align:left; font-weight:bold; margin-bottom:5px;'>{caption}</caption>"
-
-        # Header (row 0)
-        html += "<thead><tr>"
+            return "<p style='color:#999; font-size:0.85rem;'>Empty table</p>"
+        html = "<table><thead><tr>"
         for h in data[0]:
             html += f"<th>{h}</th>"
-        html += "</tr></thead>"
-
-        # Rows
-        html += "<tbody>"
+        html += "</tr></thead><tbody>"
         for row in data[1:]:
             html += "<tr>"
             for cell in row:
-                cell_text = str(cell)
-                if link_pattern and any(c.isalpha() for c in cell_text):
-                    cell_text = self._link_tables(cell_text, link_pattern)
-                html += f"<td>{cell_text}</td>"
+                text = str(cell)
+                if link_pattern and any(c.isalpha() for c in text):
+                    text = self._link_tables(text, link_pattern)
+                html += f"<td>{text}</td>"
             html += "</tr>"
-        html += "</tbody>"
-        html += "</table>"
+        html += "</tbody></table>"
         return html
 
+    def _render_ref_section(self, title, items):
+        """
+        Render a labelled pill-list of cross-reference links.
+        items: iterable of (href, label_html) tuples.
+        """
+        if not items:
+            return ""
+        pills = "".join(
+            f"<li class='ref-item'><a href='{href}'>{label}</a></li>"
+            for href, label in items
+        )
+        return (
+            f"<div class='inner-section'>"
+            f"<p class='inner-heading'>{title}</p>"
+            f"<ul class='ref-list'>{pills}</ul>"
+            f"</div>"
+        )
+
+    def _render_args_or_results(self, rows, title, link_pattern):
+        """Render an args or results list as a labelled data table."""
+        if not rows:
+            return ""
+        cells = "".join(
+            f"<tr>"
+            f"<td>{r.get('name','')}</td>"
+            f"<td>{r.get('type','')}</td>"
+            f"<td>{self._link_tables(r.get('comment',''), link_pattern)}</td>"
+            f"</tr>"
+            for r in rows
+        )
+        return (
+            f"<div class='inner-section'>"
+            f"<p class='inner-heading'>{title}</p>"
+            f"<table><thead><tr><th>Name</th><th>Type</th><th>Comment</th></tr></thead>"
+            f"<tbody>{cells}</tbody></table>"
+            f"</div>"
+        )
+
+    def _render_job(self, job, link_pattern):
+        """Render one job as a collapsible card."""
+        name      = job["job"]
+        desc_meta = job.get("description", {})
+        comments  = " ".join(desc_meta.get("comments", []))
+
+        desc_html = ""
+        if comments:
+            linked = self._link_tables(comments, link_pattern)
+            desc_html = (
+                f"<div class='inner-section'>"
+                f"<p class='inner-heading'>Description</p>"
+                f"<p class='desc-text'>{linked}</p>"
+                f"</div>"
+            )
+
+        args_html = self._render_args_or_results(desc_meta.get("args", []),    "Arguments", link_pattern)
+        res_html  = self._render_args_or_results(desc_meta.get("results", []), "Results",   link_pattern)
+
+        # Build ref pill items, deduplicating and annotating reason
+        ref_items = []
+        seen = set()
+        for ref_disp in job.get("referenced_tables", []):
+            base = ref_disp.split(" (Linked")[0].strip().upper()
+            if base in seen:
+                continue
+            seen.add(base)
+            if "(Linked via" in ref_disp:
+                reason = ref_disp.split("(Linked via ")[1].rstrip(")")
+                label = f"{base} <small style='color:#999;font-weight:normal'>({reason})</small>"
+            else:
+                label = base
+            ref_items.append((f"#table_{base}", label))
+
+        refs_html = self._render_ref_section("Referenced Tables", ref_items)
+        snippet   = (comments[:110] + "\u2026") if len(comments) > 110 else comments
+
+        return (
+            f'<details class="card" id="{name}">'
+            f'<summary>'
+            f'<div class="job-title">'
+            f'<span class="job-name">{name}</span>'
+            f'<span class="job-desc">{snippet}</span>'
+            f'</div>'
+            f'</summary>'
+            f'<div class="card-body">{desc_html}{args_html}{res_html}{refs_html}</div>'
+            f'</details>\n'
+        )
+
+    def _render_table(self, t_name, t_data, t_meta, ref_jobs, link_pattern):
+        """Render one global table as a static card."""
+        cols = t_meta.get("cols", "?")
+        rows = t_meta.get("rows", "?")
+
+        ref_items = [(f"#{rj}", rj) for rj in sorted(ref_jobs)]
+        refs_html = self._render_ref_section("Referenced by Jobs", ref_items)
+
+        return (
+            f"<div class='card' id='table_{t_name}'>"
+            f"<div class='table-card-header'>"
+            f"<span class='table-card-name'>{t_name}</span>"
+            f"<span class='table-card-meta'>{cols} cols &times; {rows} rows</span>"
+            f"</div>"
+            f"<div class='card-body'>"
+            f"<div class='inner-section'>{self._render_data_table(t_data, link_pattern)}</div>"
+            f"{refs_html}"
+            f"</div>"
+            f"</div>\n"
+        )
+
+    # ------------------------------------------------------------------
+    # HTML assembly
+    # ------------------------------------------------------------------
     def _write_html(self, overview, detailed_jobs, global_tables, output_file):
-        filename = os.path.basename(self.prg_file)
-        filepath = os.path.abspath(self.prg_file)
+        filename  = os.path.basename(self.prg_file)
+        filepath  = os.path.abspath(self.prg_file)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        job_count = len(overview.get("jobs", []))
+        job_count   = len(overview.get("jobs", []))
         table_count = len(overview.get("tables", []))
 
-        # Build a single regex pattern for all table names to optimize linking
-        # Sort by length descending to avoid partial matches
-        sorted_names = sorted(global_tables.keys(), key=len, reverse=True)
-        link_pattern = None
-        if sorted_names:
-            regex_parts = [re.escape(name) for name in sorted_names]
-            link_pattern = re.compile(r"\b(" + "|".join(regex_parts) + r")\b")
+        # Pre-index table metadata to avoid O(n²) lookups in the render loop
+        table_meta    = {t["name"]: t for t in overview.get("tables", [])}
+        table_to_jobs = {t["name"]: t.get("referenced_by_jobs", []) for t in overview.get("tables", [])}
 
-        jobs_html = ""
-        for job in detailed_jobs:
-            name = job["job"]
-            desc_meta = job.get("description", {})
-            comments = " ".join(desc_meta.get("comments", []))
+        link_pattern = self._build_link_pattern(global_tables.keys())
 
-            # Link comments
-            linked_comments = self._link_tables(comments, link_pattern)
-
-            args_html = ""
-            if desc_meta.get("args"):
-                args_html = "<section><h3>Arguments</h3>"
-                args_html += "<table><thead><tr><th>Name</th><th>Type</th><th>Comment</th></tr></thead><tbody>"
-                for arg in desc_meta["args"]:
-                    linked_arg_comment = self._link_tables(arg["comment"], link_pattern)
-                    args_html += f"<tr><td>{arg['name']}</td><td>{arg['type']}</td><td>{linked_arg_comment}</td></tr>"
-                args_html += "</tbody></table></section>"
-
-            res_html = ""
-            if desc_meta.get("results"):
-                res_html = "<section><h3>Results</h3>"
-                res_html += "<table><thead><tr><th>Name</th><th>Type</th><th>Comment</th></tr></thead><tbody>"
-                for res in desc_meta["results"]:
-                    linked_res_comment = self._link_tables(res["comment"], link_pattern)
-                    res_html += f"<tr><td>{res['name']}</td><td>{res['type']}</td><td>{linked_res_comment}</td></tr>"
-                res_html += "</tbody></table></section>"
-
-            tables_refs_html = ""
-            job_refs = set()
-            for ref_disp in job.get("referenced_tables", []):
-                base_name = ref_disp.split(" (Linked")[0].strip().upper()
-                job_refs.add(base_name)
-
-            if job_refs:
-                tables_refs_html = "<section><h3>Referenced Tables</h3><ul>"
-                for t_name in sorted(job_refs):
-                    display_name = t_name
-                    for ref_disp in job.get("referenced_tables", []):
-                        if ref_disp.startswith(t_name) and "(Linked via" in ref_disp:
-                            reason = ref_disp.split("(Linked via ")[1].rstrip(")")
-                            display_name += f" <small style='color:#666; font-weight:normal;'>({reason})</small>"
-                            break
-
-                    tables_refs_html += f"<li><a href='#table_{t_name}' class='ref-link'>{display_name}</a></li>"
-                tables_refs_html += "</ul></section>"
-
-            jobs_html += f"""
-            <details id="{name}">
-                <summary>
-                    <div class="job-title">
-                        <span>{name}</span>
-                        <span class="job-desc">{comments[:100]}{'...' if len(comments) > 100 else ''}</span>
-                    </div>
-                </summary>
-                <div class="job-content">
-                    {('<section><h3>Description</h3><p>' + linked_comments + '</p></section>') if comments else ''}
-                    {args_html}
-                    {res_html}
-                    {tables_refs_html}
-                </div>
-            </details>
-            """
-
-        tables_html_global = ""
-        for t_name, t_data in sorted(global_tables.items()):
-            tables_html_global += (
-                f"<div class='table-data-container' id='table_{t_name}'>"
+        jobs_html = "".join(
+            self._render_job(job, link_pattern) for job in detailed_jobs
+        )
+        tables_html_global = "".join(
+            self._render_table(
+                t_name, t_data,
+                table_meta.get(t_name, {}),
+                table_to_jobs.get(t_name, []),
+                link_pattern,
             )
-            tables_html_global += f"<span class='table-name'>{t_name}</span>"
-            tables_html_global += self._format_table(t_data, link_pattern=link_pattern)
-            tables_html_global += "</div>"
+            for t_name, t_data in sorted(global_tables.items())
+        )
 
-        final_html = HTML_TEMPLATE.format(
+        html = HTML_TEMPLATE.format(
             filename=filename,
             filepath=filepath,
             job_count=job_count,
@@ -482,7 +541,7 @@ class DocGenerator:
         )
 
         with open(output_file, "w", encoding="utf-8") as f:
-            f.write(final_html)
+            f.write(html)
 
 
 # ===========================================================================
@@ -491,8 +550,7 @@ class DocGenerator:
 def cmd_generate(args):
     """Main execution path for documentation generation."""
     if not args.output:
-        base = os.path.splitext(args.file)[0]
-        args.output = base + ".html"
+        args.output = os.path.splitext(args.file)[0] + ".html"
 
     gen = DocGenerator(args.file, args.heuristic)
     if gen.generate(args.output):
@@ -516,17 +574,13 @@ Examples:
   prg_doc_gen.py -f ecufile.prg -o my_doc.html --heuristic
 """,
     )
-
-    parser.add_argument("-f", "--file", required=True, help="Path to .prg file")
-    parser.add_argument(
-        "-o", "--output", help="Output HTML file path (default: <input>.html)"
-    )
+    parser.add_argument("-f", "--file",   required=True, help="Path to .prg file")
+    parser.add_argument("-o", "--output", help="Output HTML file path (default: <input>.html)")
     parser.add_argument(
         "--heuristic",
         action="store_true",
         help="Enable heuristic table matching (passed to prg_inspect.py)",
     )
-
     return parser
 
 
@@ -536,10 +590,13 @@ Examples:
 def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = build_parser()
-    args = parser.parse_args()
-
+    args   = parser.parse_args()
     cmd_generate(args)
 
 
 if __name__ == "__main__":
     main()
+
+if __name__ == "__main__":
+    main()
+

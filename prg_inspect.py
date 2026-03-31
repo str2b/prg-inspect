@@ -461,38 +461,65 @@ class PRGReader:
 
         return extracted
 
+    def get_all_table_references(self, heuristic: bool = False) -> dict:
+        """
+        Scan ALL jobs for table references in a single file-open pass.
+        Returns {table_name: sorted_list_of_job_names}.
+        """
+        all_jobs_dir = self.read_job_dir()
+        all_tables = self.read_table_dir()
+        descriptions = self.read_job_descriptions()
+
+        table_to_jobs: dict[str, set] = {name: set() for name in all_tables}
+
+        # Sort by address so we can derive each job's byte-size from the next entry.
+        sorted_jobs = sorted(all_jobs_dir, key=lambda x: x[1])
+
+        with open(self.path, "rb") as fh:
+            for i, (job_name, addr) in enumerate(sorted_jobs):
+                size = sorted_jobs[i + 1][1] - addr if i + 1 < len(sorted_jobs) else 0x2000
+                fh.seek(addr)
+                raw_data = xor_deobfuscate(fh.read(size))
+
+                desc = descriptions.get(job_name, {})
+                code_refs, implicit_refs = _find_refs_for_job(
+                    desc, raw_data, all_tables, heuristic
+                )
+                for t_name in set(code_refs + [r.split(" (Linked")[0].strip().upper() for r in implicit_refs]):
+                    if t_name in table_to_jobs:
+                        table_to_jobs[t_name].add(job_name)
+
+        return {name: sorted(js) for name, js in table_to_jobs.items()}
+
     # ------------------------------------------------------------------
     # Cross-reference: which tables does a job reference in its bytecode?
     # ------------------------------------------------------------------
+    def _read_job_bytes(self, job_name: str) -> bytes:
+        """
+        Read and deobfuscate the raw bytecode for a single job.
+        Returns an empty bytes object if the job is not found.
+        """
+        jobs = self.read_job_dir()
+        sorted_jobs = sorted(jobs, key=lambda x: x[1])
+        jobs_upper = [(n.upper(), a, i) for i, (n, a) in enumerate(sorted_jobs)]
+
+        for name_u, addr, i in jobs_upper:
+            if name_u == job_name.upper():
+                size = sorted_jobs[i + 1][1] - addr if i + 1 < len(sorted_jobs) else 0x2000
+                with open(self.path, "rb") as f:
+                    f.seek(addr)
+                    return xor_deobfuscate(f.read(size))
+        return b""
+
     def find_job_code_refs(self, job_name: str, all_tables: dict) -> list:
         """
         Scan the raw bytecode of `job_name` for embedded table-name strings.
         Returns sorted list of table names found.
         """
-        jobs = self.read_job_dir()
-        jobs_upper = [(n.upper(), a) for n, a in jobs]
-        target_addr = None
-        target_size = 0x2000
-
-        for i, (name_u, addr) in enumerate(jobs_upper):
-            if name_u == job_name.upper():
-                target_addr = addr
-                if i + 1 < len(jobs_upper):
-                    target_size = jobs_upper[i + 1][1] - addr
-                break
-
-        if target_addr is None:
-            return []
-
-        with open(self.path, "rb") as f:
-            f.seek(target_addr)
-            j_data = xor_deobfuscate(f.read(target_size))
-
-        refs = []
-        for t_name in all_tables:
-            if t_name.encode("latin-1") + b"\x00" in j_data:
-                refs.append(t_name)
-        return sorted(refs)
+        j_data = self._read_job_bytes(job_name)
+        return sorted(
+            t for t in all_tables if t.encode("latin-1") + b"\x00" in j_data
+        )
 
     # ------------------------------------------------------------------
     # Disassembler
@@ -725,9 +752,13 @@ def cmd_prg(args):
     """Architectural overview: jobs list + tables list."""
     reader = PRGReader(args.file)
     descriptions = reader.read_job_descriptions()
+    heuristic = getattr(args, "heuristic", False)
 
     job_dir = reader.read_job_dir()
     table_dir = reader.read_table_dir()
+    
+    # Get all table references (mapping: table_name -> [job_names])
+    all_refs = reader.get_all_table_references(heuristic=heuristic)
 
     # --- Build rows ---
     job_rows = [["NAME", "ADDRESS", "DESCRIPTION"]]
@@ -736,9 +767,11 @@ def cmd_prg(args):
         comments = " ".join(desc.get("comments", []))
         job_rows.append([name, f"0x{addr:06X}", comments])
 
-    table_rows = [["NAME", "ADDRESS", "COLS", "ROWS"]]
+    table_rows = [["NAME", "ADDRESS", "COLS", "ROWS", "REFERENCED BY"]]
     for name, info in sorted(table_dir.items()):
-        table_rows.append([name, f"0x{info['ptr']:06X}", info["cols"], info["rows"]])
+        refs = all_refs.get(name, [])
+        ref_str = ", ".join(refs[:5]) + (" ..." if len(refs) > 5 else "")
+        table_rows.append([name, f"0x{info['ptr']:06X}", info["cols"], info["rows"], ref_str])
 
     # --- Output ---
     if args.json:
@@ -749,7 +782,13 @@ def cmd_prg(args):
                 for r in job_rows[1:]
             ],
             "tables": [
-                {"name": r[0], "address": r[1], "cols": r[2], "rows": r[3]}
+                {
+                    "name": r[0], 
+                    "address": r[1], 
+                    "cols": r[2], 
+                    "rows": r[3],
+                    "referenced_by_jobs": all_refs.get(r[0], [])
+                }
                 for r in table_rows[1:]
             ],
         }
@@ -763,6 +802,56 @@ def cmd_prg(args):
         pretty_print_section(
             table_rows, f"TABLES ({len(table_rows)-1} Total)", width=args.width
         )
+
+
+# ===========================================================================
+# Shared helper: canonical reference finder for one job
+# ===========================================================================
+def _find_refs_for_job(
+    desc: dict,
+    raw_data: bytes,
+    all_tables: dict,
+    heuristic: bool = False,
+) -> tuple[list, list]:
+    """
+    Determine all table references for a single job.
+
+    Accepts the job's description dict and its deobfuscated raw bytecode.
+    Returns (code_refs, implicit_refs) where:
+      - code_refs: table names embedded as null-terminated strings in bytecode
+      - implicit_refs: display strings like 'NAME (Linked via Comment)'
+
+    This is the single source of truth used by both cmd_job (per-job)
+    and get_all_table_references (batch scan).
+    """
+    # 1. Bytecode: scan for null-terminated name literals
+    code_refs = sorted(
+        t for t in all_tables if t.encode("latin-1") + b"\x00" in raw_data
+    )
+
+    # 2. Description text: comments, arg names/comments, result names/comments
+    implicit_refs: list[str] = []
+
+    for c in desc.get("comments", []):
+        _find_table_refs_in_text(c, all_tables, code_refs, implicit_refs, heuristic)
+
+    for a in desc.get("args", []):
+        arg_name = a.get("name", "").upper()
+        if arg_name in all_tables and arg_name not in code_refs:
+            implicit_refs.append(f"{arg_name} (Linked via Argument Match)")
+        _find_table_refs_in_text(
+            a.get("comment", ""), all_tables, code_refs, implicit_refs, heuristic
+        )
+
+    for r in desc.get("results", []):
+        res_name = r.get("name", "").upper()
+        if res_name in all_tables and res_name not in code_refs:
+            implicit_refs.append(f"{res_name} (Linked via Result Match)")
+        _find_table_refs_in_text(
+            r.get("comment", ""), all_tables, code_refs, implicit_refs, heuristic
+        )
+
+    return code_refs, implicit_refs
 
 
 # ===========================================================================
@@ -808,44 +897,16 @@ def cmd_job(args):
         job_name = job_name_raw.upper()
         desc = descriptions.get(job_name, {})
 
-        # Primary refs: table names found as string literals in the job's bytecode.
-        code_refs = reader.find_job_code_refs(job_name, all_tables)
+        # Load raw bytecode for this job (needed by _find_refs_for_job)
+        raw_data = reader._read_job_bytes(job_name)
 
-        # Secondary refs: 'table <Name>' patterns in description comments/args/results.
-        implicit_refs = []
-        if all_tables:
-            for c in desc.get("comments", []):
-                _find_table_refs_in_text(
-                    c, all_tables, code_refs, implicit_refs, heuristic
-                )
-            for a in desc.get("args", []):
-                arg_name = a.get("name", "").upper()
-                if arg_name in all_tables and arg_name not in code_refs:
-                    implicit_refs.append(f"{arg_name} (Linked via Argument Match)")
-                _find_table_refs_in_text(
-                    a.get("comment", ""),
-                    all_tables,
-                    code_refs,
-                    implicit_refs,
-                    heuristic,
-                )
-            for r in desc.get("results", []):
-                res_name = r.get("name", "").upper()
-                if res_name in all_tables and res_name not in code_refs:
-                    implicit_refs.append(f"{res_name} (Linked via Result Match)")
-                _find_table_refs_in_text(
-                    r.get("comment", ""),
-                    all_tables,
-                    code_refs,
-                    implicit_refs,
-                    heuristic,
-                )
+        # Single source of truth for all table references
+        code_refs, implicit_refs = _find_refs_for_job(
+            desc, raw_data, all_tables, heuristic
+        )
 
         all_refs = sorted(
-            set(
-                code_refs
-                + [i.split(" (Linked")[0].strip().upper() for i in implicit_refs]
-            )
+            set(code_refs + [i.split(" (Linked")[0].strip().upper() for i in implicit_refs])
         )
         all_refs_display = sorted(code_refs + implicit_refs)
 
