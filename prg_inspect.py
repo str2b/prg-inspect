@@ -30,6 +30,11 @@ import sys
 import json
 import argparse
 
+
+# ===========================================================================
+# Constants & Utilities
+# ===========================================================================
+
 # Opcode table + addressing modes
 # Source: EdiabasNet.cs - OpAddrMode enum, OcList
 MODE_NONE = 0
@@ -64,6 +69,29 @@ _NO_MODE_OPCODES = {
     0x14,
     0x15,
     0x41,
+    0x47,
+    0x48,
+    0x5A,
+    0x5B,
+    0x5C,
+    0x5D,
+    0x5E,
+    0x5F,
+}
+
+# Subset of _NO_MODE_OPCODES that encode a relative 16-bit signed jump offset.
+# Source: EdiabasNet.cs - OcList
+_SIMPLE_JUMP_OPCODES = {
+    0x0B,
+    0x0C,
+    0x0E,
+    0x0F,
+    0x10,
+    0x11,
+    0x12,
+    0x13,
+    0x14,
+    0x15,
     0x47,
     0x48,
     0x5A,
@@ -273,7 +301,8 @@ def xor_deobfuscate(data: bytes) -> bytes:
 
 
 # ===========================================================================
-# PRGReader - single binary access layer
+# I/O Layer: PRGReader
+# ===========================================================================
 # Binary file format derived from EdiabasNet.cs:
 #   table list offset (0x84) - ReadAllTables()
 #   job list offset   (0x88) - GetJobList()
@@ -282,10 +311,32 @@ def xor_deobfuscate(data: bytes) -> bytes:
 #   table entry layout(0x50 bytes) - ReadTable()
 #   instruction encoding (opcode + mode byte) - opcode dispatch loop
 # ===========================================================================
+
+# Description-block field dispatch table.
+# Each entry: (prefix, value_slice_start, list_key, mode)
+#   mode "append_str"  → append plain string to list_key          (JOBCOMMENT)
+#   mode "append_name" → append {"name": value} to list_key       (RESULT, ARG)
+#   mode <field_name>  → set that field on the last item in list_key
+_DESC_DISPATCH = (
+    ("JOBCOMMENT:", 11, "comments", "append_str"),
+    ("RESULT:", 7, "results", "append_name"),
+    ("RESULTTYPE:", 11, "results", "type"),
+    ("RESULTCOMMENT:", 14, "results", "comment"),
+    ("ARG:", 4, "args", "append_name"),
+    ("ARGCOMMENT:", 11, "args", "comment"),
+)
+
+
 class PRGReader:
     """
-    Reads a binary .prg file and exposes high-level accessors.
-    All binary obfuscation is handled internally via xor_deobfuscate().
+    Binary access layer for .prg files.
+
+    Reads, deobfuscates, and structures raw PRG binary data.  All public
+    methods return plain Python dicts/lists — no cross-cutting analysis
+    logic, no rendering concerns.
+
+    Disassembly lives here because it is tightly coupled to the binary
+    layout and opcode constants defined in this module.
     """
 
     # ------------------------------------------------------------------
@@ -295,7 +346,7 @@ class PRGReader:
         self.path = path
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Low-level helpers
     # ------------------------------------------------------------------
     def _read_u32(self, f, obfuscated: bool = False) -> int:
         raw = f.read(4)
@@ -366,50 +417,39 @@ class PRGReader:
             desc_offset = self._read_u32(f)
             if desc_offset == 0:
                 return descriptions
-
             f.seek(desc_offset)
             size = self._read_u32(f)
             if size == 0:
                 return descriptions
-
             raw_data = xor_deobfuscate(f.read(size))
 
-        lines = raw_data.decode("latin-1", errors="ignore").split("\n")
         current_job = None
-        for line in lines:
-            line = line.strip()
+        for raw_line in raw_data.decode("latin-1", errors="ignore").split("\n"):
+            line = raw_line.strip()
             if line.startswith("JOBNAME:"):
                 current_job = line[8:].strip()
                 descriptions[current_job] = {"comments": [], "results": [], "args": []}
-            elif current_job and line:
-                if line.startswith("JOBCOMMENT:"):
-                    descriptions[current_job]["comments"].append(line[11:].strip())
-                elif line.startswith("RESULT:"):
-                    descriptions[current_job]["results"].append(
-                        {"name": line[7:].strip()}
-                    )
-                elif line.startswith("RESULTTYPE:"):
-                    if descriptions[current_job]["results"]:
-                        descriptions[current_job]["results"][-1]["type"] = line[
-                            11:
-                        ].strip()
-                elif line.startswith("RESULTCOMMENT:"):
-                    if descriptions[current_job]["results"]:
-                        descriptions[current_job]["results"][-1]["comment"] = line[
-                            14:
-                        ].strip()
-                elif line.startswith("ARG:"):
-                    descriptions[current_job]["args"].append({"name": line[4:].strip()})
-                elif line.startswith("ARGCOMMENT:"):
-                    if descriptions[current_job]["args"]:
-                        descriptions[current_job]["args"][-1]["comment"] = line[
-                            11:
-                        ].strip()
+                continue
+            if not current_job or not line:
+                continue
+            entry = descriptions[current_job]
+            for prefix, slc, list_key, mode in _DESC_DISPATCH:
+                if not line.startswith(prefix):
+                    continue
+                value = line[slc:].strip()
+                target = entry[list_key]
+                if mode == "append_str":
+                    target.append(value)
+                elif mode == "append_name":
+                    target.append({"name": value})
+                elif target:  # mode is a field name string; set it on the last item
+                    target[-1][mode] = value
+                break
 
         return descriptions
 
     # ------------------------------------------------------------------
-    # Table data extraction
+    # Table and job data extraction
     # ------------------------------------------------------------------
     def extract_table_data(
         self, table_info: dict, all_tables: dict, max_rows: int = 1000
@@ -435,17 +475,16 @@ class PRGReader:
             f.seek(ptr)
             raw = xor_deobfuscate(f.read(available_size))
 
-        # Split by null terminator and decode.
-        raw_parts = raw.split(b"\x00")
-        parts = []
-        for p in raw_parts:
-            cell = p.decode("latin-1", errors="replace")
-            cell = re.sub(r"[\x00-\x1f\x7f]", " ", cell).strip()
-            parts.append(cell)
+        # Split by null terminator, decode, strip control chars.
+        parts = [
+            re.sub(
+                r"[\x00-\x1f\x7f]", " ", p.decode("latin-1", errors="replace")
+            ).strip()
+            for p in raw.split(b"\x00")
+        ]
 
-        # STICK TO DECLARED ROWS to avoid over-reading garbage into cells.
+        # Stick to declared rows to avoid over-reading garbage into cells.
         actual_rows = min(declared_rows, max_rows)
-
         extracted = []
         for r in range(actual_rows):
             start = r * cols
@@ -453,13 +492,37 @@ class PRGReader:
             if end > len(parts):
                 break
             row = parts[start:end]
-            # Only add if it's not a purely empty row at the very end
             if any(row):
                 extracted.append(row)
-            elif r > 0:  # Stop at the first truly empty row after header
+            elif r > 0:  # stop at the first truly empty row after the header
                 break
 
         return extracted
+
+    def read_job_bytes(self, job_name: str) -> bytes:
+        """
+        Read and deobfuscate the raw bytecode for a single job.
+        Returns an empty bytes object if the job is not found.
+        """
+        sorted_jobs = sorted(self.read_job_dir(), key=lambda x: x[1])
+        jobs_upper = [(n.upper(), a, i) for i, (n, a) in enumerate(sorted_jobs)]
+        for name_u, addr, i in jobs_upper:
+            if name_u == job_name.upper():
+                size = (
+                    sorted_jobs[i + 1][1] - addr if i + 1 < len(sorted_jobs) else 0x2000
+                )
+                with open(self.path, "rb") as f:
+                    f.seek(addr)
+                    return xor_deobfuscate(f.read(size))
+        return b""
+
+    def find_job_code_refs(self, job_name: str, all_tables: dict) -> list:
+        """
+        Scan the raw bytecode of `job_name` for embedded table-name strings.
+        Returns sorted list of table names found.
+        """
+        j_data = self.read_job_bytes(job_name)
+        return sorted(t for t in all_tables if t.encode("latin-1") + b"\x00" in j_data)
 
     def get_all_table_references(self, heuristic: bool = False) -> dict:
         """
@@ -471,78 +534,78 @@ class PRGReader:
         descriptions = self.read_job_descriptions()
 
         table_to_jobs: dict[str, set] = {name: set() for name in all_tables}
-
-        # Sort by address so we can derive each job's byte-size from the next entry.
         sorted_jobs = sorted(all_jobs_dir, key=lambda x: x[1])
 
         with open(self.path, "rb") as fh:
             for i, (job_name, addr) in enumerate(sorted_jobs):
-                size = sorted_jobs[i + 1][1] - addr if i + 1 < len(sorted_jobs) else 0x2000
+                size = (
+                    sorted_jobs[i + 1][1] - addr if i + 1 < len(sorted_jobs) else 0x2000
+                )
                 fh.seek(addr)
                 raw_data = xor_deobfuscate(fh.read(size))
-
                 desc = descriptions.get(job_name, {})
                 code_refs, implicit_refs = _find_refs_for_job(
                     desc, raw_data, all_tables, heuristic
                 )
-                for t_name in set(code_refs + [r.split(" (Linked")[0].strip().upper() for r in implicit_refs]):
+                canon = {r.split(" (Linked")[0].strip().upper() for r in implicit_refs}
+                for t_name in set(code_refs) | canon:
                     if t_name in table_to_jobs:
                         table_to_jobs[t_name].add(job_name)
 
         return {name: sorted(js) for name, js in table_to_jobs.items()}
 
     # ------------------------------------------------------------------
-    # Cross-reference: which tables does a job reference in its bytecode?
-    # ------------------------------------------------------------------
-    def _read_job_bytes(self, job_name: str) -> bytes:
-        """
-        Read and deobfuscate the raw bytecode for a single job.
-        Returns an empty bytes object if the job is not found.
-        """
-        jobs = self.read_job_dir()
-        sorted_jobs = sorted(jobs, key=lambda x: x[1])
-        jobs_upper = [(n.upper(), a, i) for i, (n, a) in enumerate(sorted_jobs)]
-
-        for name_u, addr, i in jobs_upper:
-            if name_u == job_name.upper():
-                size = sorted_jobs[i + 1][1] - addr if i + 1 < len(sorted_jobs) else 0x2000
-                with open(self.path, "rb") as f:
-                    f.seek(addr)
-                    return xor_deobfuscate(f.read(size))
-        return b""
-
-    def find_job_code_refs(self, job_name: str, all_tables: dict) -> list:
-        """
-        Scan the raw bytecode of `job_name` for embedded table-name strings.
-        Returns sorted list of table names found.
-        """
-        j_data = self._read_job_bytes(job_name)
-        return sorted(
-            t for t in all_tables if t.encode("latin-1") + b"\x00" in j_data
-        )
-
-    # ------------------------------------------------------------------
     # Disassembler
     # ------------------------------------------------------------------
     @staticmethod
-    def _dis_get_arg(data: bytes, pc: int, mode: int, base_addr: int, start_pc: int):
+    def _dis_decode_jump(
+        data: bytes, pc: int, opcode: int, target_addr: int, start_pc: int
+    ) -> tuple[str, str, int]:
         """
-        Decode one argument from `data[pc:]` according to `mode`.
+        Decode one jump/branch instruction from the no-mode opcode group.
+        Returns (arg0, arg1, new_pc).
+        """
+        if opcode in _SIMPLE_JUMP_OPCODES:
+            offset = struct.unpack("<h", data[pc : pc + 2])[0]
+            abs_target = f"0x{target_addr + start_pc + 2 + offset:08X}"
+            return abs_target, "", pc + 2
+        if opcode == 0x41:  # etag: conditional jump + inline null-terminated tag string
+            offset = struct.unpack("<h", data[pc : pc + 2])[0]
+            abs_target = f"0x{target_addr + start_pc + 2 + offset:08X}"
+            str_start = pc + 2
+            slen = 0
+            while str_start + slen < len(data) and data[str_start + slen] != 0:
+                slen += 1
+            s = (
+                data[str_start : str_start + slen]
+                .decode("latin-1", errors="replace")
+                .replace("\r", "")
+                .replace("\n", "\\n")
+            )
+            return abs_target, f'"{s}"', str_start + slen + 1
+        return "", "", pc  # 0x0D (ret) and others carry no operands
+
+    @staticmethod
+    def _dis_get_arg(  # pylint: disable=too-many-return-statements
+        data: bytes, pc: int, mode: int
+    ) -> tuple[str, int]:
+        """
+        Decode one argument from data[pc:] according to mode.
         Returns (arg_str, new_pc).
         """
         if mode == MODE_NONE:
             return "", pc
-        elif mode in (MODE_REG_S, MODE_REG_AB, MODE_REG_I, MODE_REG_L):
+        if mode in (MODE_REG_S, MODE_REG_AB, MODE_REG_I, MODE_REG_L):
             return f"R{data[pc]}", pc + 1
-        elif mode == MODE_IMM8:
+        if mode == MODE_IMM8:
             return f"0x{data[pc]:02X}", pc + 1
-        elif mode == MODE_IMM16:
+        if mode == MODE_IMM16:
             v = struct.unpack("<H", data[pc : pc + 2])[0]
             return f"0x{v:04X}", pc + 2
-        elif mode == MODE_IMM32:
+        if mode == MODE_IMM32:
             v = struct.unpack("<I", data[pc : pc + 4])[0]
             return f"0x{v:08X}", pc + 4
-        elif mode == MODE_IMM_STR:
+        if mode == MODE_IMM_STR:
             slen = struct.unpack("<H", data[pc : pc + 2])[0]
             sdata = data[pc + 2 : pc + 2 + slen]
             try:
@@ -550,15 +613,14 @@ class PRGReader:
                 if len(text) > 80:
                     text = text[:77] + "..."
                 return f'"{text}"', pc + 2 + slen
-            except Exception:
+            except UnicodeDecodeError:
                 return f"h'{sdata.hex().upper()}'", pc + 2 + slen
-        elif mode == MODE_IDX_IMM:
+        if mode == MODE_IDX_IMM:
             idx = struct.unpack("<I", data[pc : pc + 4])[0]
             return f"IDX(0x{idx:X})", pc + 4
-        elif mode == MODE_IDX_REG:
+        if mode == MODE_IDX_REG:
             return f"IDX(R{data[pc]})", pc + 1
-        else:
-            return f"MODE_{mode}?", pc + 1
+        return f"MODE_{mode}?", pc + 1
 
     def disassemble_job(self, job_name: str):
         """
@@ -597,9 +659,9 @@ class PRGReader:
             opcode = data[pc]
             pc += 1
 
-            has_mode = opcode not in _NO_MODE_OPCODES
-            mode0 = mode1 = 0
             arg0 = arg1 = ""
+            mode0 = mode1 = 0
+            has_mode = opcode not in _NO_MODE_OPCODES
 
             if has_mode:
                 if pc >= len(data):
@@ -608,49 +670,12 @@ class PRGReader:
                 pc += 1
                 mode0 = (mode & 0xF0) >> 4
                 mode1 = mode & 0x0F
-                arg0, pc = self._dis_get_arg(data, pc, mode0, target_addr, start_pc)
-                arg1, pc = self._dis_get_arg(data, pc, mode1, target_addr, start_pc)
+                arg0, pc = self._dis_get_arg(data, pc, mode0)
+                arg1, pc = self._dis_get_arg(data, pc, mode1)
             else:
-                # Relative jump opcodes
-                if opcode in (
-                    0x0B,
-                    0x0C,
-                    0x0E,
-                    0x0F,
-                    0x10,
-                    0x11,
-                    0x12,
-                    0x13,
-                    0x14,
-                    0x15,
-                    0x47,
-                    0x48,
-                    0x5A,
-                    0x5B,
-                    0x5C,
-                    0x5D,
-                    0x5E,
-                    0x5F,
-                ):
-                    offset = struct.unpack("<h", data[pc : pc + 2])[0]
-                    arg0 = f"0x{target_addr + start_pc + 2 + offset:08X}"
-                    pc += 2
-                elif opcode == 0x41:  # etag - has jump + inline string
-                    offset = struct.unpack("<h", data[pc : pc + 2])[0]
-                    arg0 = f"0x{target_addr + start_pc + 2 + offset:08X}"
-                    pc += 2
-                    slen = 0
-                    while pc + slen < len(data) and data[pc + slen] != 0:
-                        slen += 1
-                    s = (
-                        data[pc : pc + slen]
-                        .decode("latin-1", errors="replace")
-                        .replace("\r", "")
-                        .replace("\n", "\\n")
-                    )
-                    arg1 = f'"{s}"'
-                    pc += slen + 1
-                # 0x0D = ret: no args
+                arg0, arg1, pc = self._dis_decode_jump(
+                    data, pc, opcode, target_addr, start_pc
+                )
 
             op_name = OPCODES.get(opcode, f"UNK_{opcode:02X}")
             args_str = ", ".join(a for a in (arg0, arg1) if a)
@@ -677,11 +702,160 @@ class PRGReader:
 
 
 # ===========================================================================
-# Shared output helpers
+# Analysis Layer
 # ===========================================================================
+# Pure functions that derive cross-cutting insights from parsed PRG data.
+# Input: dicts/lists from PRGReader. Output: enriched dicts/lists.
+# No file I/O beyond what is delegated to PRGReader.
+# ===========================================================================
+
+
+def _find_table_refs_in_text(
+    text: str,
+    all_tables: dict,
+    refs: list,
+    implicit: list,
+    heuristic: bool = False,
+):
+    """Scan free-form comment text for 'table <Name>' references.
+
+    The real PRG convention is: 'table <TableName> <Column>' in RESULTCOMMENT
+    or ARGCOMMENT lines.  Only exact table names are matched by default.
+
+    With heuristic=True, names ending in '_XXX' are treated as prefix wildcards
+    and matched against all tables sharing that prefix.  This pattern does not
+    appear in the real EDIABAS format; it is a best-effort aid for hand-written
+    or partially documented files.
+    """
+    for match in re.finditer(r"tables?\s+([a-zA-Z0-9_]+)", text, re.IGNORECASE):
+        t_name = match.group(1).upper()
+        if heuristic and t_name.endswith("_XXX"):
+            prefix = t_name[:-4]
+            for real_t in all_tables:
+                if real_t.startswith(prefix) and real_t not in refs:
+                    implicit.append(f"{real_t} (Linked via Wildcard '{t_name}')")
+        elif t_name in all_tables and t_name not in refs:
+            implicit.append(f"{t_name} (Linked via Comment)")
+
+
+def _find_refs_for_job(
+    desc: dict,
+    raw_data: bytes,
+    all_tables: dict,
+    heuristic: bool = False,
+) -> tuple[list, list]:
+    """
+    Determine all table references for a single job.
+
+    Accepts the job's description dict and its deobfuscated raw bytecode.
+    Returns (code_refs, implicit_refs) where:
+      - code_refs: table names embedded as null-terminated strings in bytecode
+      - implicit_refs: display strings like 'NAME (Linked via Comment)'
+
+    This is the single source of truth used by both cmd_job (per-job)
+    and get_all_table_references (batch scan).
+    """
+    # 1. Bytecode: scan for null-terminated name literals
+    code_refs = sorted(
+        t for t in all_tables if t.encode("latin-1") + b"\x00" in raw_data
+    )
+
+    # 2. Description text: comments, arg names/comments, result names/comments
+    implicit_refs: list[str] = []
+
+    for c in desc.get("comments", []):
+        _find_table_refs_in_text(c, all_tables, code_refs, implicit_refs, heuristic)
+
+    for a in desc.get("args", []):
+        arg_name = a.get("name", "").upper()
+        if arg_name in all_tables and arg_name not in code_refs:
+            implicit_refs.append(f"{arg_name} (Linked via Argument Match)")
+        _find_table_refs_in_text(
+            a.get("comment", ""), all_tables, code_refs, implicit_refs, heuristic
+        )
+
+    for r in desc.get("results", []):
+        res_name = r.get("name", "").upper()
+        if res_name in all_tables and res_name not in code_refs:
+            implicit_refs.append(f"{res_name} (Linked via Result Match)")
+        _find_table_refs_in_text(
+            r.get("comment", ""), all_tables, code_refs, implicit_refs, heuristic
+        )
+
+    return code_refs, implicit_refs
+
+
+def _resolve_refs(code_refs: list, implicit_refs: list) -> tuple[list, list]:
+    """
+    Derive (all_refs, all_refs_display) from raw reference lists.
+
+    all_refs        — deduplicated canonical upper-case names (for data lookup).
+    all_refs_display — annotated display strings (for user output).
+    """
+    all_refs = sorted(
+        set(code_refs + [r.split(" (Linked")[0].strip().upper() for r in implicit_refs])
+    )
+    all_refs_display = sorted(code_refs + implicit_refs)
+    return all_refs, all_refs_display
+
+
+def _collect_table_data(reader: PRGReader, seed_refs: list, all_tables: dict) -> dict:
+    """
+    BFS from seed_refs, following table-cell name links recursively.
+    Returns {table_name: rows} for all discovered tables.
+    """
+    table_data_map = {}
+    queue = list(seed_refs)
+    seen: set = set()
+    while queue:
+        t_name = queue.pop(0)
+        if t_name in seen or t_name not in all_tables:
+            continue
+        seen.add(t_name)
+        try:
+            rows = reader.extract_table_data(all_tables[t_name], all_tables)
+            table_data_map[t_name] = rows
+            for row in rows:
+                for cell in row:
+                    candidate = str(cell).strip().upper()
+                    if candidate in all_tables and candidate not in seen:
+                        queue.append(candidate)
+        except (struct.error, UnicodeDecodeError, OSError):
+            table_data_map[t_name] = []
+    return table_data_map
+
+
+def _promote_recursive(
+    all_refs: list,
+    all_refs_display: list,
+    table_data_map: dict,
+    direct_ref_set: set,
+) -> tuple[list, list]:
+    """
+    Extend all_refs/all_refs_display with tables discovered via BFS
+    that were not in the original direct reference set.
+    """
+    extra = sorted(t for t in table_data_map if t not in direct_ref_set)
+    if not extra:
+        return all_refs, all_refs_display
+    new_refs = sorted(set(all_refs) | set(extra))
+    new_display = sorted(
+        set(all_refs_display) | {f"{t} (Linked via Table Cell)" for t in extra}
+    )
+    return new_refs, new_display
+
+
+# ===========================================================================
+# Presentation Layer
+# ===========================================================================
+# Pure formatters. No data fetching, no file I/O.
+# Input: plain Python data. Output: formatted strings / stdout.
+# ===========================================================================
+
+
 def _sanitize_cell(val, width: int) -> str:
     """Convert a cell value to a display string, stripping control chars.
-    width=0 -> no truncation; width>0 -> hard limit with trailing '...'.
+    width=0 → no truncation; width>0 → hard limit with trailing '...'.
     """
     s = re.sub(r"[\r\n\t]", " ", str(val)).strip()
     if width == 0 or len(s) <= width:
@@ -745,9 +919,97 @@ def pretty_print_section(data: list, title: str, width: int = 50):
     print("-" * (row_width + 4) + "\n")
 
 
+def _build_job_json(
+    job_name: str, desc: dict, all_refs_display: list, table_data_map: dict
+) -> dict:
+    """Serialize one job's analysis results to the wire-format JSON dict."""
+    comments_raw = desc.get("comments", [])
+    return {
+        "job": job_name,
+        "description": {
+            "comments": [c.replace("\r", "") for c in comments_raw],
+            "args": [
+                {
+                    "name": a.get("name", ""),
+                    "type": a.get("type", ""),
+                    "comment": a.get("comment", "").replace("\r", ""),
+                }
+                for a in desc.get("args", [])
+            ],
+            "results": [
+                {
+                    "name": r.get("name", ""),
+                    "type": r.get("type", ""),
+                    "comment": r.get("comment", "").replace("\r", ""),
+                }
+                for r in desc.get("results", [])
+            ],
+        },
+        "referenced_tables": all_refs_display,
+        "table_data": dict(table_data_map),
+    }
+
+
+def _print_job(
+    job_name: str,
+    file_path: str,
+    desc: dict,
+    all_refs_display: list,
+    all_refs: list,
+    table_data_map: dict,
+    width: int,
+) -> None:
+    """Render one job's analysis to stdout in human-readable text format."""
+    print(f"=== Job Dump: {job_name} ===")
+    print(f"File: {file_path}\n")
+
+    comments = "\n".join(c.replace("\r", "") for c in desc.get("comments", []))
+    args_list = [
+        f"  {a.get('name','')}{(' (' + a.get('type','') + ')') if a.get('type') else ''}: "
+        f"{a.get('comment','').replace(chr(13),'')}"
+        for a in desc.get("args", [])
+    ]
+    results_list = [
+        f"  {r.get('name','')}{(' (' + r.get('type','') + ')') if r.get('type') else ''}: "
+        f"{r.get('comment','').replace(chr(13),'')}"
+        for r in desc.get("results", [])
+    ]
+
+    if comments or args_list or results_list:
+        print("--- DESCRIPTION ---")
+        if comments:
+            print(comments)
+        if args_list:
+            print("\n[Arguments]\n" + "\n".join(args_list))
+        if results_list:
+            print("\n[Results]\n" + "\n".join(results_list))
+        print("-" * 19 + "\n")
+    else:
+        print("--- DESCRIPTION ---\n(None or Empty)\n-------------------\n")
+
+    if not all_refs_display:
+        print("--- REFERENCED TABLES ---\n  (None)\n-------------------------\n")
+    else:
+        print("--- REFERENCED TABLES ---")
+        for ref in all_refs_display:
+            print(f"  {ref}")
+        print("-------------------------\n")
+        for t_name in all_refs:
+            rows = table_data_map.get(t_name)
+            if rows is not None:
+                pretty_print_table(rows, t_name, width=width)
+        print()
+
+
 # ===========================================================================
-# Sub-command: prg
+# CLI Commands
 # ===========================================================================
+# Thin orchestration: read → analyse → present.
+# Each command delegates immediately to the layers above.
+# No business logic; no formatting code; no inline algorithms.
+# ===========================================================================
+
+
 def cmd_prg(args):
     """Architectural overview: jobs list + tables list."""
     reader = PRGReader(args.file)
@@ -756,11 +1018,8 @@ def cmd_prg(args):
 
     job_dir = reader.read_job_dir()
     table_dir = reader.read_table_dir()
-    
-    # Get all table references (mapping: table_name -> [job_names])
     all_refs = reader.get_all_table_references(heuristic=heuristic)
 
-    # --- Build rows ---
     job_rows = [["NAME", "ADDRESS", "DESCRIPTION"]]
     for name, addr in sorted(job_dir, key=lambda x: x[0]):
         desc = descriptions.get(name, {})
@@ -771,9 +1030,10 @@ def cmd_prg(args):
     for name, info in sorted(table_dir.items()):
         refs = all_refs.get(name, [])
         ref_str = ", ".join(refs[:5]) + (" ..." if len(refs) > 5 else "")
-        table_rows.append([name, f"0x{info['ptr']:06X}", info["cols"], info["rows"], ref_str])
+        table_rows.append(
+            [name, f"0x{info['ptr']:06X}", info["cols"], info["rows"], ref_str]
+        )
 
-    # --- Output ---
     if args.json:
         out = {
             "file": args.file,
@@ -783,11 +1043,11 @@ def cmd_prg(args):
             ],
             "tables": [
                 {
-                    "name": r[0], 
-                    "address": r[1], 
-                    "cols": r[2], 
+                    "name": r[0],
+                    "address": r[1],
+                    "cols": r[2],
                     "rows": r[3],
-                    "referenced_by_jobs": all_refs.get(r[0], [])
+                    "referenced_by_jobs": all_refs.get(r[0], []),
                 }
                 for r in table_rows[1:]
             ],
@@ -804,87 +1064,6 @@ def cmd_prg(args):
         )
 
 
-# ===========================================================================
-# Shared helper: canonical reference finder for one job
-# ===========================================================================
-def _find_refs_for_job(
-    desc: dict,
-    raw_data: bytes,
-    all_tables: dict,
-    heuristic: bool = False,
-) -> tuple[list, list]:
-    """
-    Determine all table references for a single job.
-
-    Accepts the job's description dict and its deobfuscated raw bytecode.
-    Returns (code_refs, implicit_refs) where:
-      - code_refs: table names embedded as null-terminated strings in bytecode
-      - implicit_refs: display strings like 'NAME (Linked via Comment)'
-
-    This is the single source of truth used by both cmd_job (per-job)
-    and get_all_table_references (batch scan).
-    """
-    # 1. Bytecode: scan for null-terminated name literals
-    code_refs = sorted(
-        t for t in all_tables if t.encode("latin-1") + b"\x00" in raw_data
-    )
-
-    # 2. Description text: comments, arg names/comments, result names/comments
-    implicit_refs: list[str] = []
-
-    for c in desc.get("comments", []):
-        _find_table_refs_in_text(c, all_tables, code_refs, implicit_refs, heuristic)
-
-    for a in desc.get("args", []):
-        arg_name = a.get("name", "").upper()
-        if arg_name in all_tables and arg_name not in code_refs:
-            implicit_refs.append(f"{arg_name} (Linked via Argument Match)")
-        _find_table_refs_in_text(
-            a.get("comment", ""), all_tables, code_refs, implicit_refs, heuristic
-        )
-
-    for r in desc.get("results", []):
-        res_name = r.get("name", "").upper()
-        if res_name in all_tables and res_name not in code_refs:
-            implicit_refs.append(f"{res_name} (Linked via Result Match)")
-        _find_table_refs_in_text(
-            r.get("comment", ""), all_tables, code_refs, implicit_refs, heuristic
-        )
-
-    return code_refs, implicit_refs
-
-
-# ===========================================================================
-# Sub-command: job
-# ===========================================================================
-def _find_table_refs_in_text(
-    text: str,
-    all_tables: dict,
-    refs: list,
-    implicit: list,
-    heuristic: bool = False,
-):
-    """Scan free-form comment text for 'table <Name>' references.
-
-    The real PRG convention is: 'table <TableName> <Column>' in RESULTCOMMENT
-    or ARGCOMMENT lines.  Only exact table names are matched by default.
-
-    With heuristic=True, names ending in '_XXX' are treated as prefix wildcards
-    and matched against all tables sharing that prefix.  This pattern does not
-    appear in the real EDIABAS format; it is a best-effort aid for hand-written
-    or partially documented files.
-    """
-    for match in re.finditer(r"tables?\s+([a-zA-Z0-9_]+)", text, re.IGNORECASE):
-        t_name = match.group(1).upper()
-        if heuristic and t_name.endswith("_XXX"):
-            prefix = t_name[:-4]
-            for real_t in all_tables:
-                if real_t.startswith(prefix) and real_t not in refs:
-                    implicit.append(f"{real_t} (Linked via Wildcard '{t_name}')")
-        elif t_name in all_tables and t_name not in refs:
-            implicit.append(f"{t_name} (Linked via Comment)")
-
-
 def cmd_job(args):
     """Deep job dump: description, referenced tables, recursive table data."""
     reader = PRGReader(args.file)
@@ -897,126 +1076,36 @@ def cmd_job(args):
         job_name = job_name_raw.upper()
         desc = descriptions.get(job_name, {})
 
-        # Load raw bytecode for this job (needed by _find_refs_for_job)
-        raw_data = reader._read_job_bytes(job_name)
-
-        # Single source of truth for all table references
+        raw_data = reader.read_job_bytes(job_name)
         code_refs, implicit_refs = _find_refs_for_job(
             desc, raw_data, all_tables, heuristic
         )
+        all_refs, all_refs_display = _resolve_refs(code_refs, implicit_refs)
 
-        all_refs = sorted(
-            set(code_refs + [i.split(" (Linked")[0].strip().upper() for i in implicit_refs])
+        table_data_map = _collect_table_data(reader, all_refs, all_tables)
+        all_refs, all_refs_display = _promote_recursive(
+            all_refs, all_refs_display, table_data_map, set(all_refs)
         )
-        all_refs_display = sorted(code_refs + implicit_refs)
-
-        # Collect table data (BFS: seed from direct refs, follow cell-name links)
-        table_data_map = {}
-        direct_ref_set = set(all_refs)
-        queue = list(all_refs)
-        seen = set()
-        while queue:
-            t_name = queue.pop(0)
-            if t_name in seen or t_name not in all_tables:
-                continue
-            seen.add(t_name)
-            try:
-                rows = reader.extract_table_data(all_tables[t_name], all_tables)
-                table_data_map[t_name] = rows
-                for row in rows:
-                    for cell in row:
-                        potential = str(cell).strip().upper()
-                        if potential in all_tables and potential not in seen:
-                            queue.append(potential)
-            except Exception:
-                table_data_map[t_name] = []
-
-        # Promote recursively-discovered tables into the display lists
-        for t_name in sorted(table_data_map):
-            if t_name not in direct_ref_set:
-                all_refs.append(t_name)
-                all_refs_display.append(f"{t_name} (Linked via Table Cell)")
-        all_refs = sorted(set(all_refs))
-        all_refs_display = sorted(set(all_refs_display))
 
         if args.json:
-            comments_raw = desc.get("comments", []) if desc else []
-            out = {
-                "job": job_name,
-                "description": {
-                    "comments": [c.replace("\r", "") for c in comments_raw],
-                    "args": [
-                        {
-                            "name": a.get("name", ""),
-                            "type": a.get("type", ""),
-                            "comment": a.get("comment", "").replace("\r", ""),
-                        }
-                        for a in desc.get("args", [])
-                    ],
-                    "results": [
-                        {
-                            "name": r.get("name", ""),
-                            "type": r.get("type", ""),
-                            "comment": r.get("comment", "").replace("\r", ""),
-                        }
-                        for r in desc.get("results", [])
-                    ],
-                },
-                "referenced_tables": all_refs_display,
-                "table_data": {name: rows for name, rows in table_data_map.items()},
-            }
-            json_output["jobs"].append(out)
-            continue
-
-        print(f"=== Job Dump: {job_name} ===")
-        print(f"File: {args.file}\n")
-
-        # Description block
-        comments_raw = desc.get("comments", [])
-        comments = "\n".join(c.replace("\r", "") for c in comments_raw)
-        args_list = [
-            f"  {a.get('name','')}{(' (' + a.get('type','') + ')') if a.get('type') else ''}: "
-            f"{a.get('comment','').replace(chr(13),'')}"
-            for a in desc.get("args", [])
-        ]
-        results_list = [
-            f"  {r.get('name','')}{(' (' + r.get('type','') + ')') if r.get('type') else ''}: "
-            f"{r.get('comment','').replace(chr(13),'')}"
-            for r in desc.get("results", [])
-        ]
-
-        if comments or args_list or results_list:
-            print("--- DESCRIPTION ---")
-            if comments:
-                print(comments)
-            if args_list:
-                print(f"\n[Arguments]\n" + "\n".join(args_list))
-            if results_list:
-                print(f"\n[Results]\n" + "\n".join(results_list))
-            print("-" * 19 + "\n")
+            json_output["jobs"].append(
+                _build_job_json(job_name, desc, all_refs_display, table_data_map)
+            )
         else:
-            print("--- DESCRIPTION ---\n(None or Empty)\n-------------------\n")
-
-        if not all_refs_display:
-            print("--- REFERENCED TABLES ---\n  (None)\n-------------------------\n")
-        else:
-            print("--- REFERENCED TABLES ---")
-            for ref in all_refs_display:
-                print(f"  {ref}")
-            print("-------------------------\n")
-            for t_name in all_refs:
-                rows = table_data_map.get(t_name)
-                if rows is not None:
-                    pretty_print_table(rows, t_name, width=args.width)
-            print()
+            _print_job(
+                job_name,
+                args.file,
+                desc,
+                all_refs_display,
+                all_refs,
+                table_data_map,
+                args.width,
+            )
 
     if args.json:
         print(json.dumps(json_output, indent=2, ensure_ascii=False))
 
 
-# ===========================================================================
-# Sub-command: table
-# ===========================================================================
 def cmd_table(args):
     """Dump one or more named tables in the pretty format."""
     reader = PRGReader(args.file)
@@ -1025,7 +1114,6 @@ def cmd_table(args):
 
     for table_name_raw in args.table:
         table_name = table_name_raw.upper()
-        # Case-insensitive lookup
         match = next((k for k in all_tables if k.upper() == table_name), None)
         if match is None:
             available = sorted(all_tables.keys())
@@ -1064,9 +1152,6 @@ def cmd_table(args):
         print(json.dumps(json_output, indent=2, ensure_ascii=False))
 
 
-# ===========================================================================
-# Sub-command: dtc
-# ===========================================================================
 def cmd_dtc(args):
     """Dump DTC tables (FORTTEXTE)."""
     reader = PRGReader(args.file)
@@ -1095,9 +1180,6 @@ def cmd_dtc(args):
             pretty_print_table(rows, name, width=args.width)
 
 
-# ===========================================================================
-# Sub-command: dis
-# ===========================================================================
 def cmd_dis(args):
     """Disassemble a job's bytecode (text only)."""
     reader = PRGReader(args.file)
@@ -1107,7 +1189,6 @@ def cmd_dis(args):
         target_addr, ref_tables, instructions = reader.disassemble_job(job_name)
 
         if target_addr is None:
-            # List available jobs as a hint
             jobs = reader.read_job_dir()
             msg = (
                 f"Job '{job_name_raw}' not found in {args.file}.\n"
@@ -1130,9 +1211,12 @@ def cmd_dis(args):
 
 
 # ===========================================================================
-# Argument parser
+# Entry Point
 # ===========================================================================
+
+
 def build_parser() -> argparse.ArgumentParser:
+    """Build and return the CLI argument parser for all inspection modes."""
     parser = argparse.ArgumentParser(
         prog="prg_inspect",
         description="Unified EDIABAS PRG inspection tool",
@@ -1186,10 +1270,8 @@ Examples:
     return parser
 
 
-# ===========================================================================
-# Entry point
-# ===========================================================================
-def main():
+def main() -> None:
+    """Entry point: parse CLI arguments and dispatch to the appropriate command."""
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = build_parser()
     args = parser.parse_args()

@@ -24,6 +24,14 @@ import subprocess
 import argparse
 import re
 from datetime import datetime
+from typing import NamedTuple
+
+
+class TableRenderCtx(NamedTuple):
+    """Metadata context for rendering a global table card."""
+
+    meta: dict
+    ref_jobs: list
 
 # ===========================================================================
 # HTML Template
@@ -281,6 +289,12 @@ HTML_TEMPLATE = """\
 # Generator Logic
 # ===========================================================================
 class DocGenerator:
+    """
+    Orchestrates the generation of a self-contained HTML documentation report
+    for a PRG file by invoking prg_inspect.py as a subprocess and rendering
+    the collected job and table data into a pre-built HTML template.
+    """
+
     def __init__(self, prg_file, heuristic=False):
         self.prg_file = prg_file
         self.heuristic = heuristic
@@ -290,6 +304,7 @@ class DocGenerator:
     # Data acquisition
     # ------------------------------------------------------------------
     def _run_inspect(self, extra_args):
+        """Run prg_inspect.py with extra_args and return the parsed JSON output."""
         cmd = self.inspector_cmd + extra_args + ["-f", self.prg_file, "-j"]
         try:
             result = subprocess.run(
@@ -298,21 +313,25 @@ class DocGenerator:
             return json.loads(result.stdout)
         except subprocess.CalledProcessError as e:
             print(f"Error running prg_inspect.py: {e.stderr}", file=sys.stderr)
-        except Exception as e:
-            print(f"Failed to parse JSON: {e}", file=sys.stderr)
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse JSON output: {e}", file=sys.stderr)
         return None
 
-    def generate(self, output_file):
+    def generate(self, output_file) -> bool:
+        """
+        Collect all job and table data from the PRG file and write an HTML report.
+        Returns True on success, False if the overview fetch fails.
+        """
         print("Reading architectural overview...")
         overview = self._run_inspect(["--prg"])
         if not overview:
             return False
 
-        jobs_list      = overview.get("jobs", [])
-        tables_list    = overview.get("tables", [])
-        total_jobs     = len(jobs_list)
-        all_job_data   = []
-        global_tables  = {}  # name -> row data
+        jobs_list = overview.get("jobs", [])
+        tables_list = overview.get("tables", [])
+        total_jobs = len(jobs_list)
+        all_job_data = []
+        global_tables = {}  # name -> row data
 
         print(f"Collecting deep details for {total_jobs} jobs...")
         for i, job_meta in enumerate(jobs_list):
@@ -332,8 +351,10 @@ class DocGenerator:
 
         # Fetch tables not referenced by any job
         total_tables_count = len(tables_list)
-        tables_from_jobs   = len(global_tables)
-        remaining_tables   = [t["name"] for t in tables_list if t["name"] not in global_tables]
+        tables_from_jobs = len(global_tables)
+        remaining_tables = [
+            t["name"] for t in tables_list if t["name"] not in global_tables
+        ]
 
         if remaining_tables:
             print(
@@ -377,20 +398,19 @@ class DocGenerator:
         """Render a 2-D list as an HTML <table> (row 0 = header)."""
         if not data:
             return "<p style='color:#999; font-size:0.85rem;'>Empty table</p>"
-        html = "<table><thead><tr>"
-        for h in data[0]:
-            html += f"<th>{h}</th>"
-        html += "</tr></thead><tbody>"
-        for row in data[1:]:
-            html += "<tr>"
-            for cell in row:
-                text = str(cell)
-                if link_pattern and any(c.isalpha() for c in text):
-                    text = self._link_tables(text, link_pattern)
-                html += f"<td>{text}</td>"
-            html += "</tr>"
-        html += "</tbody></table>"
-        return html
+
+        def _cell(value):
+            text = str(value)
+            if link_pattern and any(c.isalpha() for c in text):
+                text = self._link_tables(text, link_pattern)
+            return f"<td>{text}</td>"
+
+        header = "".join(f"<th>{h}</th>" for h in data[0])
+        rows = "".join(
+            "<tr>" + "".join(_cell(c) for c in row) + "</tr>"
+            for row in data[1:]
+        )
+        return f"<table><thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table>"
 
     def _render_ref_section(self, title, items):
         """
@@ -432,9 +452,9 @@ class DocGenerator:
 
     def _render_job(self, job, link_pattern):
         """Render one job as a collapsible card."""
-        name      = job["job"]
+        name = job["job"]
         desc_meta = job.get("description", {})
-        comments  = " ".join(desc_meta.get("comments", []))
+        comments = " ".join(desc_meta.get("comments", []))
 
         desc_html = ""
         if comments:
@@ -446,8 +466,12 @@ class DocGenerator:
                 f"</div>"
             )
 
-        args_html = self._render_args_or_results(desc_meta.get("args", []),    "Arguments", link_pattern)
-        res_html  = self._render_args_or_results(desc_meta.get("results", []), "Results",   link_pattern)
+        args_html = self._render_args_or_results(
+            desc_meta.get("args", []), "Arguments", link_pattern
+        )
+        res_html = self._render_args_or_results(
+            desc_meta.get("results", []), "Results", link_pattern
+        )
 
         # Build ref pill items, deduplicating and annotating reason
         ref_items = []
@@ -465,26 +489,26 @@ class DocGenerator:
             ref_items.append((f"#table_{base}", label))
 
         refs_html = self._render_ref_section("Referenced Tables", ref_items)
-        snippet   = (comments[:110] + "\u2026") if len(comments) > 110 else comments
+        snippet = (comments[:110] + "\u2026") if len(comments) > 110 else comments
 
         return (
             f'<details class="card" id="{name}">'
-            f'<summary>'
+            f"<summary>"
             f'<div class="job-title">'
             f'<span class="job-name">{name}</span>'
             f'<span class="job-desc">{snippet}</span>'
-            f'</div>'
-            f'</summary>'
+            f"</div>"
+            f"</summary>"
             f'<div class="card-body">{desc_html}{args_html}{res_html}{refs_html}</div>'
-            f'</details>\n'
+            f"</details>\n"
         )
 
-    def _render_table(self, t_name, t_data, t_meta, ref_jobs, link_pattern):
+    def _render_table(self, t_name, t_data, ctx: TableRenderCtx, link_pattern):
         """Render one global table as a static card."""
-        cols = t_meta.get("cols", "?")
-        rows = t_meta.get("rows", "?")
+        cols = ctx.meta.get("cols", "?")
+        rows = ctx.meta.get("rows", "?")
 
-        ref_items = [(f"#{rj}", rj) for rj in sorted(ref_jobs)]
+        ref_items = [(f"#{rj}", rj) for rj in sorted(ctx.ref_jobs)]
         refs_html = self._render_ref_section("Referenced by Jobs", ref_items)
 
         return (
@@ -504,16 +528,19 @@ class DocGenerator:
     # HTML assembly
     # ------------------------------------------------------------------
     def _write_html(self, overview, detailed_jobs, global_tables, output_file):
-        filename  = os.path.basename(self.prg_file)
-        filepath  = os.path.abspath(self.prg_file)
+        filename = os.path.basename(self.prg_file)
+        filepath = os.path.abspath(self.prg_file)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        job_count   = len(overview.get("jobs", []))
+        job_count = len(overview.get("jobs", []))
         table_count = len(overview.get("tables", []))
 
         # Pre-index table metadata to avoid O(n²) lookups in the render loop
-        table_meta    = {t["name"]: t for t in overview.get("tables", [])}
-        table_to_jobs = {t["name"]: t.get("referenced_by_jobs", []) for t in overview.get("tables", [])}
+        table_meta = {t["name"]: t for t in overview.get("tables", [])}
+        table_to_jobs = {
+            t["name"]: t.get("referenced_by_jobs", [])
+            for t in overview.get("tables", [])
+        }
 
         link_pattern = self._build_link_pattern(global_tables.keys())
 
@@ -522,9 +549,12 @@ class DocGenerator:
         )
         tables_html_global = "".join(
             self._render_table(
-                t_name, t_data,
-                table_meta.get(t_name, {}),
-                table_to_jobs.get(t_name, []),
+                t_name,
+                t_data,
+                TableRenderCtx(
+                    meta=table_meta.get(t_name, {}),
+                    ref_jobs=table_to_jobs.get(t_name, []),
+                ),
                 link_pattern,
             )
             for t_name, t_data in sorted(global_tables.items())
@@ -564,6 +594,7 @@ def cmd_generate(args):
 # Argument parser
 # ===========================================================================
 def build_parser() -> argparse.ArgumentParser:
+    """Build and return the CLI argument parser for the documentation generator."""
     parser = argparse.ArgumentParser(
         prog="prg_doc_gen",
         description="EDIABAS PRG Documentation Generator",
@@ -574,8 +605,10 @@ Examples:
   prg_doc_gen.py -f ecufile.prg -o my_doc.html --heuristic
 """,
     )
-    parser.add_argument("-f", "--file",   required=True, help="Path to .prg file")
-    parser.add_argument("-o", "--output", help="Output HTML file path (default: <input>.html)")
+    parser.add_argument("-f", "--file", required=True, help="Path to .prg file")
+    parser.add_argument(
+        "-o", "--output", help="Output HTML file path (default: <input>.html)"
+    )
     parser.add_argument(
         "--heuristic",
         action="store_true",
@@ -587,16 +620,13 @@ Examples:
 # ===========================================================================
 # Entry point
 # ===========================================================================
-def main():
+def main() -> None:
+    """Entry point: parse CLI arguments and run the documentation generator."""
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = build_parser()
-    args   = parser.parse_args()
+    args = parser.parse_args()
     cmd_generate(args)
 
 
 if __name__ == "__main__":
     main()
-
-if __name__ == "__main__":
-    main()
-
